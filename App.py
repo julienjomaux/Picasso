@@ -17,35 +17,20 @@ date_str = st.sidebar.date_input(
     min_value=datetime(2020, 1, 1)
 ).strftime("%Y-%m-%d")
 
-# Time range slider
+# ADDED: Time range slider in the sidebar
 time_range = st.sidebar.slider(
     "Select Hour Range",
     value=(time(0, 0), time(23, 59)),
     format="HH:mm"
 )
 
-# TSO Selection Checkboxes
-st.sidebar.subheader("Select TSOs to Display")
-show_50hzt = st.sidebar.checkbox("50HZT", value=True)
-show_elia = st.sidebar.checkbox("ELIA", value=True)
-show_rte = st.sidebar.checkbox("RTE", value=True)
-show_tnl = st.sidebar.checkbox("TNL", value=True)
-
-# Map selections to a dictionary
-visibility = {
-    '50HZT': show_50hzt,
-    'ELIA': show_elia,
-    'RTE': show_rte,
-    'TNL': show_tnl
-}
-
 st.title(f"Picasso CBMP Data for {date_str}")
 
 # --- Download / Load Data ---
 @st.cache_data(show_spinner=True)
 def load_csv_for_date(date_str):
-    url = f"https://api.transnetbw.de{date_str}&lang=de"
-    # Using verify=False as per original requirement
+    url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
+    # Note: verify=False is used as per your original code
     response = requests.get(url, verify=False)
     if response.status_code != 200:
         st.error("Failed to retrieve data from API.")
@@ -57,6 +42,7 @@ def load_csv_for_date(date_str):
 df_raw = load_csv_for_date(date_str)
 
 if df_raw is not None:
+    # --- ADDED: Filter Dataframe based on selected time range ---
     start_time, end_time = time_range
     df = df_raw[
         (df_raw['Zeit (ISO 8601)'].dt.time >= start_time) & 
@@ -90,9 +76,7 @@ if df_raw is not None:
 
         # --- Extract and Plot ---
         times = df['Zeit (ISO 8601)']
-        # Reorder to ensure ELIA is plotted last (on top)
-        to_plot = ['50HZT', 'RTE', 'TNL', 'ELIA'] 
-        
+        to_plot = ['50HZT', 'ELIA', 'RTE', 'TNL']
         elia = tso_values.get('ELIA', np.full(len(times), np.nan))
         hz50 = tso_values.get('50HZT', np.full(len(times), np.nan))
         rte  = tso_values.get('RTE', np.full(len(times), np.nan))
@@ -104,29 +88,19 @@ if df_raw is not None:
         )
         
         fig, ax = plt.subplots(figsize=(18, 7))
-        
         for tso in to_plot:
-            if tso in tso_values and visibility[tso]:
-                # Style logic for Elia: Dashed, thicker, and high zorder
-                if tso == 'ELIA':
-                    lw = 3.0
-                    zo = 10
-                    ls = '--'
-                else:
-                    lw = 1.5
-                    zo = 2
-                    ls = '-'
-                
-                ax.plot(times, tso_values[tso], label=tso, linewidth=lw, zorder=zo, linestyle=ls)
+            if tso in tso_values:
+                ax.plot(times, tso_values[tso], label=tso)
         
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
         ax.set_title(f"{date_str} Picasso CBMP (Zoomed: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
         
+        # Adjust locator based on range size to keep it clean
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax.grid(True, which='major', axis='both', alpha=0.3)
+        ax.grid(True, which='major', axis='both')
         plt.tight_layout()
         st.pyplot(fig)
 
@@ -151,3 +125,5 @@ if df_raw is not None:
         st.write(f"**Percentage of time ELIA = Tennet NL:** {perc_elia_TNL:.2f}%")
 else:
     st.warning("No data available for the selected date.")
+
+
