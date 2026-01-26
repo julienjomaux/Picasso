@@ -24,7 +24,7 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# ADDED: TSO Selection Checkboxes
+# TSO Selection Checkboxes
 st.sidebar.subheader("Select TSOs to Display")
 show_50hzt = st.sidebar.checkbox("50HZT", value=True)
 show_elia = st.sidebar.checkbox("ELIA", value=True)
@@ -44,7 +44,8 @@ st.title(f"Picasso CBMP Data for {date_str}")
 # --- Download / Load Data ---
 @st.cache_data(show_spinner=True)
 def load_csv_for_date(date_str):
-    url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
+    url = f"https://api.transnetbw.de{date_str}&lang=de"
+    # Using verify=False as per original requirement
     response = requests.get(url, verify=False)
     if response.status_code != 200:
         st.error("Failed to retrieve data from API.")
@@ -104,7 +105,7 @@ if df_raw is not None:
         
         fig, ax = plt.subplots(figsize=(18, 7))
         
-       for tso in to_plot:
+        for tso in to_plot:
             if tso in tso_values and visibility[tso]:
                 # Style logic for Elia: Dashed, thicker, and high zorder
                 if tso == 'ELIA':
@@ -117,7 +118,7 @@ if df_raw is not None:
                     ls = '-'
                 
                 ax.plot(times, tso_values[tso], label=tso, linewidth=lw, zorder=zo, linestyle=ls)
-                
+        
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
@@ -150,4 +151,3 @@ if df_raw is not None:
         st.write(f"**Percentage of time ELIA = Tennet NL:** {perc_elia_TNL:.2f}%")
 else:
     st.warning("No data available for the selected date.")
-
