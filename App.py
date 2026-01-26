@@ -8,7 +8,6 @@ from datetime import datetime, time
 import io
 import urllib3
 
-# Suppress SSL warnings as per your original use of verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
@@ -108,6 +107,30 @@ if df_raw is not None:
         ax.grid(True, which='major', axis='both')
         plt.tight_layout()
         st.pyplot(fig)
+
+        # -------- 2x2 Subplots for Each TSO --------
+        fig_sub, axs = plt.subplots(2, 2, figsize=(18, 10), sharex=True)
+        axs = axs.flat
+        tsos_order = ['50HZT', 'ELIA', 'RTE', 'TNL']
+
+        for i, tso in enumerate(tsos_order):
+            ax_subplot = axs[i]
+            if tso in tso_values:
+                linestyle = '--' if tso_linestyle[tso] else '-'
+                ax_subplot.plot(times, tso_values[tso], color=TSO_COLORS[tso], linestyle=linestyle, label=tso)
+                ax_subplot.set_title(tso)
+                ax_subplot.set_ylabel("€/MWh")
+                ax_subplot.legend()
+            else:
+                ax_subplot.text(0.5, 0.5, "No Data", ha='center', va='center')
+            ax_subplot.grid(True, which='major')
+            ax_subplot.xaxis.set_major_locator(mdates.AutoDateLocator())
+            ax_subplot.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+
+        for ax_subplot in axs[2:]:
+            ax_subplot.set_xlabel("Time")
+        plt.tight_layout()
+        st.pyplot(fig_sub)
 
         # --- Statistics ---
         def percentage_equal(arr1, arr2):
