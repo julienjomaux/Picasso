@@ -104,13 +104,20 @@ if df_raw is not None:
         
         fig, ax = plt.subplots(figsize=(18, 7))
         
-        for tso in to_plot:
+       for tso in to_plot:
             if tso in tso_values and visibility[tso]:
-                # Style logic: ELIA is thicker and forced to the front via zorder
-                lw = 3.5 if tso == 'ELIA' else 1.5
-                zo = 10 if tso == 'ELIA' else 2
-                ax.plot(times, tso_values[tso], label=tso, linewidth=lw, zorder=zo)
-        
+                # Style logic for Elia: Dashed, thicker, and high zorder
+                if tso == 'ELIA':
+                    lw = 3.0
+                    zo = 10
+                    ls = '--'
+                else:
+                    lw = 1.5
+                    zo = 2
+                    ls = '-'
+                
+                ax.plot(times, tso_values[tso], label=tso, linewidth=lw, zorder=zo, linestyle=ls)
+                
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
@@ -143,3 +150,4 @@ if df_raw is not None:
         st.write(f"**Percentage of time ELIA = Tennet NL:** {perc_elia_TNL:.2f}%")
 else:
     st.warning("No data available for the selected date.")
+
