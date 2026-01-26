@@ -120,8 +120,9 @@ if df_raw is not None:
 
         st.markdown("### Key Results (for selected range)")
         st.write(f"**Percentage of time ELIA is unique:** {percent_elia_unique:.2f}%")
-        st.write(f"**Percentage of time ELIA = 50HZT:** {perc_elia_50HZT:.2f}%")
+        st.write(f"**Percentage of time ELIA = 50 Hertz:** {perc_elia_50HZT:.2f}%")
         st.write(f"**Percentage of time ELIA = RTE:** {perc_elia_RTE:.2f}%")
-        st.write(f"**Percentage of time ELIA = TNL:** {perc_elia_TNL:.2f}%")
+        st.write(f"**Percentage of time ELIA = Tennet NL:** {perc_elia_TNL:.2f}%")
 else:
     st.warning("No data available for the selected date.")
+
