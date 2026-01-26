@@ -29,7 +29,9 @@ def load_csv_for_date(date_str):
         st.error("Failed to retrieve data from API.")
         return None
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
+    df['Zeit (ISO 8601)'] = df['Zeit (ISO 8601)'] + pd.Timedelta(hours=1)
     return df
+    
 
 
 df = load_csv_for_date(date_str)
@@ -105,3 +107,4 @@ if df is not None:
 else:
 
     st.warning("No data available for the selected date.")
+
