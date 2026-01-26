@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, time
 import io
+import pytz  # Added for timezone handling
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
@@ -13,11 +14,11 @@ st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 st.sidebar.header("Settings")
 date_str = st.sidebar.date_input(
     label="Select a date",
-    value=datetime.utcnow(),
+    value=datetime.now(), # Use local now instead of utcnow
     min_value=datetime(2020, 1, 1)
 ).strftime("%Y-%m-%d")
 
-# ADDED: Time range slider in the sidebar
+# Time range slider in the sidebar
 time_range = st.sidebar.slider(
     "Select Hour Range",
     value=(time(0, 0), time(23, 59)),
@@ -35,14 +36,24 @@ def load_csv_for_date(date_str):
     if response.status_code != 200:
         st.error("Failed to retrieve data from API.")
         return None
+    
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
-    df['Zeit (ISO 8601)'] = df['Zeit (ISO 8601)'] + pd.Timedelta(hours=1)
+    
+    # --- UPDATED TIMEZONE LOGIC ---
+    # 1. Ensure the 'Zeit' column is treated as UTC (the API usually provides UTC ISO strings)
+    # 2. Convert from UTC to Europe/Brussels (automatically handles +1 or +2)
+    df['Zeit (ISO 8601)'] = (
+        pd.to_datetime(df['Zeit (ISO 8601)'])
+        .dt.tz_localize('UTC')
+        .dt.tz_convert('Europe/Brussels')
+        .dt.tz_localize(None) # Remove timezone info so it works with matplotlib/filters
+    )
     return df
 
 df_raw = load_csv_for_date(date_str)
 
 if df_raw is not None:
-    # --- ADDED: Filter Dataframe based on selected time range ---
+    # --- Filter Dataframe based on selected time range ---
     start_time, end_time = time_range
     df = df_raw[
         (df_raw['Zeit (ISO 8601)'].dt.time >= start_time) & 
@@ -93,11 +104,10 @@ if df_raw is not None:
                 ax.plot(times, tso_values[tso], label=tso)
         
         ax.legend()
-        ax.set_xlabel("Time")
+        ax.set_xlabel("Time (Local Brussels)")
         ax.set_ylabel("€/MWh")
         ax.set_title(f"{date_str} Picasso CBMP (Zoomed: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
         
-        # Adjust locator based on range size to keep it clean
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.grid(True, which='major', axis='both')
@@ -125,4 +135,3 @@ if df_raw is not None:
         st.write(f"**Percentage of time ELIA = Tennet NL:** {perc_elia_TNL:.2f}%")
 else:
     st.warning("No data available for the selected date.")
-
