@@ -14,12 +14,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
 # --- Fixed Configuration ---
-# Ensures each TSO always keeps the same color regardless of selection
 TSO_COLORS = {
     '50HZT': '#1f77b4',  # Blue
     'ELIA':  '#ff7f0e',  # Orange
     'RTE':   '#2ca02c',  # Green
-    'TNL':   '#d62728'   # Red
+    'TNL':   '#d62728',  # Red
 }
 
 # --- Streamlit Sidebar: Selection ---
@@ -36,11 +35,13 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# ADDED: Checkboxes for individual TSO selection
+# --- TSO selection and dashed (linestyle) option ---
 st.sidebar.subheader("TSO Selection")
 tso_toggle = {}
+tso_linestyle = {}
 for tso in TSO_COLORS.keys():
     tso_toggle[tso] = st.sidebar.checkbox(tso, value=True)
+    tso_linestyle[tso] = st.sidebar.checkbox(f"Dashed line for {tso}", value=False, key=f"{tso}_dash")
 
 st.title(f"Picasso CBMP Data for {date_str}")
 
@@ -48,7 +49,6 @@ st.title(f"Picasso CBMP Data for {date_str}")
 @st.cache_data(show_spinner=True)
 def load_csv_for_date(date_str):
     url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
-    # Using your original working request logic
     response = requests.get(url, verify=False)
     if response.status_code != 200:
         st.error(f"Failed to retrieve data from API. Status code: {response.status_code}")
@@ -91,19 +91,18 @@ if df_raw is not None:
 
         # --- Extract and Plot ---
         times = df['Zeit (ISO 8601)']
-        
+
         fig, ax = plt.subplots(figsize=(18, 7))
-        
-        # Plot only if the checkbox is ticked
+
         for tso, color in TSO_COLORS.items():
             if tso_toggle[tso] and tso in tso_values:
-                ax.plot(times, tso_values[tso], label=tso, color=color)
-        
+                linestyle = '--' if tso_linestyle[tso] else '-'
+                ax.plot(times, tso_values[tso], label=tso, color=color, linestyle=linestyle)
+
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
         ax.set_title(f"{date_str} Picasso CBMP (Zoomed: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
-        
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.grid(True, which='major', axis='both')
@@ -116,13 +115,12 @@ if df_raw is not None:
             if mask.sum() == 0:
                 return 0.0
             return 100 * (arr1[mask] == arr2[mask]).sum() / mask.sum()
-        
+
         elia = tso_values.get('ELIA', np.full(len(times), np.nan))
         hz50 = tso_values.get('50HZT', np.full(len(times), np.nan))
         rte  = tso_values.get('RTE', np.full(len(times), np.nan))
         tnl  = tso_values.get('TNL', np.full(len(times), np.nan))
-        
-        # Calculate Unique status based on your original logic
+
         mask_unique = (
             ~np.isnan(elia) & ~np.isnan(hz50) & ~np.isnan(rte) & ~np.isnan(tnl) &
             (elia != hz50) & (elia != rte) & (elia != tnl)
@@ -131,7 +129,6 @@ if df_raw is not None:
         percent_elia_unique = 100 * np.sum(mask_unique) / denom if denom > 0 else 0
 
         st.markdown("### Key Results (for selected range)")
-        # We always show these stats if the data is available, regardless of checkbox
         st.write(f"**Percentage of time ELIA is unique:** {percent_elia_unique:.2f}%")
         st.write(f"**Percentage of time ELIA = 50 Hertz:** {percentage_equal(elia, hz50):.2f}%")
         st.write(f"**Percentage of time ELIA = RTE:** {percentage_equal(elia, rte):.2f}%")
