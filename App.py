@@ -8,13 +8,13 @@ from datetime import datetime, time
 import io
 import urllib3
 
-# Suppress SSL warnings for legacy API compatibility
+# Suppress SSL warnings as per your original use of verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
 # --- Fixed Configuration ---
-# Maintains consistent coloring across the app session
+# Ensures each TSO always keeps the same color regardless of selection
 TSO_COLORS = {
     '50HZT': '#1f77b4',  # Blue
     'ELIA':  '#ff7f0e',  # Orange
@@ -36,33 +36,24 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# Individual checkboxes for each TSO and their line style
-st.sidebar.subheader("TSO Selection & Style")
-tso_settings = {}
+# ADDED: Checkboxes for individual TSO selection
+st.sidebar.subheader("TSO Selection")
+tso_toggle = {}
 for tso in TSO_COLORS.keys():
-    # Use columns to put Visibility and Dashed side-by-side
-    col1, col2 = st.sidebar.columns([2, 1])
-    is_visible = col1.checkbox(f"Show {tso}", value=True)
-    # Dashed line shorthand in Matplotlib is '--'
-    is_dashed = col2.checkbox("Dash", key=f"dash_{tso}")
-    
-    tso_settings[tso] = {
-        "visible": is_visible,
-        "linestyle": "--" if is_dashed else "-"
-    }
+    tso_toggle[tso] = st.sidebar.checkbox(tso, value=True)
 
 st.title(f"Picasso CBMP Data for {date_str}")
 
 # --- Download / Load Data ---
 @st.cache_data(show_spinner=True)
 def load_csv_for_date(date_str):
-    url = f"https://api.transnetbw.de{date_str}&lang=de"
+    url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
+    # Using your original working request logic
     response = requests.get(url, verify=False)
     if response.status_code != 200:
-        st.error(f"Failed to retrieve data from API. Status: {response.status_code}")
+        st.error(f"Failed to retrieve data from API. Status code: {response.status_code}")
         return None
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
-    # Correcting for timezone offset as per original code
     df['Zeit (ISO 8601)'] = df['Zeit (ISO 8601)'] + pd.Timedelta(hours=1)
     return df
 
@@ -78,11 +69,12 @@ if df_raw is not None:
     if df.empty:
         st.warning("No data found for the selected time range.")
     else:
-        # --- Prepare data for plotting ---
+        # --- Prepare dictionary ---
         tso_names = sorted(set(col.split('_')[0] for col in df.columns if '_' in col))
         tso_values = {}
         for tso in tso_names:
-            neg_col, pos_col = f"{tso}_NEG", f"{tso}_POS"
+            neg_col = f"{tso}_NEG"
+            pos_col = f"{tso}_POS"
             vals = []
             for neg, pos in zip(df.get(neg_col, [np.nan]*len(df)), df.get(pos_col, [np.nan]*len(df))):
                 neg_val = np.nan if pd.isna(neg) or neg == 'N/A' else float(neg)
@@ -97,40 +89,40 @@ if df_raw is not None:
                     vals.append((neg_val + pos_val) / 2)
             tso_values[tso] = np.array(vals)
 
-        # --- Plotting ---
+        # --- Extract and Plot ---
         times = df['Zeit (ISO 8601)']
+        
         fig, ax = plt.subplots(figsize=(18, 7))
         
+        # Plot only if the checkbox is ticked
         for tso, color in TSO_COLORS.items():
-            if tso_settings[tso]["visible"] and tso in tso_values:
-                ax.plot(
-                    times, 
-                    tso_values[tso], 
-                    label=tso, 
-                    color=color, 
-                    linestyle=tso_settings[tso]["linestyle"]
-                )
+            if tso_toggle[tso] and tso in tso_values:
+                ax.plot(times, tso_values[tso], label=tso, color=color)
         
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
-        ax.set_title(f"{date_str} Picasso CBMP")
+        ax.set_title(f"{date_str} Picasso CBMP (Zoomed: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
+        
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax.grid(True)
+        ax.grid(True, which='major', axis='both')
         plt.tight_layout()
         st.pyplot(fig)
 
         # --- Statistics ---
         def percentage_equal(arr1, arr2):
             mask = ~np.isnan(arr1) & ~np.isnan(arr2)
-            return 100 * (arr1[mask] == arr2[mask]).sum() / mask.sum() if mask.sum() > 0 else 0.0
+            if mask.sum() == 0:
+                return 0.0
+            return 100 * (arr1[mask] == arr2[mask]).sum() / mask.sum()
         
         elia = tso_values.get('ELIA', np.full(len(times), np.nan))
         hz50 = tso_values.get('50HZT', np.full(len(times), np.nan))
         rte  = tso_values.get('RTE', np.full(len(times), np.nan))
         tnl  = tso_values.get('TNL', np.full(len(times), np.nan))
         
+        # Calculate Unique status based on your original logic
         mask_unique = (
             ~np.isnan(elia) & ~np.isnan(hz50) & ~np.isnan(rte) & ~np.isnan(tnl) &
             (elia != hz50) & (elia != rte) & (elia != tnl)
@@ -139,6 +131,7 @@ if df_raw is not None:
         percent_elia_unique = 100 * np.sum(mask_unique) / denom if denom > 0 else 0
 
         st.markdown("### Key Results (for selected range)")
+        # We always show these stats if the data is available, regardless of checkbox
         st.write(f"**Percentage of time ELIA is unique:** {percent_elia_unique:.2f}%")
         st.write(f"**Percentage of time ELIA = 50 Hertz:** {percentage_equal(elia, hz50):.2f}%")
         st.write(f"**Percentage of time ELIA = RTE:** {percentage_equal(elia, rte):.2f}%")
