@@ -6,18 +6,21 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, time
 import io
+import urllib3
+
+# Suppress SSL warnings as per your original use of verify=False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
 # --- Fixed Configuration ---
-# ADDED: Mapping to ensure each TSO always has the same color
+# Ensures each TSO always keeps the same color regardless of selection
 TSO_COLORS = {
     '50HZT': '#1f77b4',  # Blue
     'ELIA':  '#ff7f0e',  # Orange
     'RTE':   '#2ca02c',  # Green
     'TNL':   '#d62728'   # Red
 }
-DEFAULT_TSOS = list(TSO_COLORS.keys())
 
 # --- Streamlit Sidebar: Selection ---
 st.sidebar.header("Settings")
@@ -33,22 +36,22 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# ADDED: Individual checkboxes for each TSO
+# ADDED: Checkboxes for individual TSO selection
 st.sidebar.subheader("TSO Selection")
-selected_tsos = []
-for tso in DEFAULT_TSOS:
-    if st.sidebar.checkbox(tso, value=True):
-        selected_tsos.append(tso)
+tso_toggle = {}
+for tso in TSO_COLORS.keys():
+    tso_toggle[tso] = st.sidebar.checkbox(tso, value=True)
 
 st.title(f"Picasso CBMP Data for {date_str}")
 
 # --- Download / Load Data ---
 @st.cache_data(show_spinner=True)
 def load_csv_for_date(date_str):
-    url = f"https://api.transnetbw.de{date_str}&lang=de"
+    url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
+    # Using your original working request logic
     response = requests.get(url, verify=False)
     if response.status_code != 200:
-        st.error("Failed to retrieve data from API.")
+        st.error(f"Failed to retrieve data from API. Status code: {response.status_code}")
         return None
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
     df['Zeit (ISO 8601)'] = df['Zeit (ISO 8601)'] + pd.Timedelta(hours=1)
@@ -65,58 +68,73 @@ if df_raw is not None:
 
     if df.empty:
         st.warning("No data found for the selected time range.")
-    elif not selected_tsos:
-        st.warning("Please tick at least one TSO in the sidebar.")
     else:
         # --- Prepare dictionary ---
+        tso_names = sorted(set(col.split('_')[0] for col in df.columns if '_' in col))
         tso_values = {}
-        for tso in selected_tsos:
-            neg_col, pos_col = f"{tso}_NEG", f"{tso}_POS"
-            if neg_col in df.columns or pos_col in df.columns:
-                vals = []
-                for neg, pos in zip(df.get(neg_col, [np.nan]*len(df)), df.get(pos_col, [np.nan]*len(df))):
-                    neg_val = np.nan if pd.isna(neg) or neg == 'N/A' else float(neg)
-                    pos_val = np.nan if pd.isna(pos) or pos == 'N/A' else float(pos)
-                    if np.isnan(neg_val) and np.isnan(pos_val):
-                        vals.append(np.nan)
-                    elif np.isnan(neg_val):
-                        vals.append(pos_val)
-                    elif np.isnan(pos_val):
-                        vals.append(neg_val)
-                    else:
-                        vals.append((neg_val + pos_val) / 2)
-                tso_values[tso] = np.array(vals)
+        for tso in tso_names:
+            neg_col = f"{tso}_NEG"
+            pos_col = f"{tso}_POS"
+            vals = []
+            for neg, pos in zip(df.get(neg_col, [np.nan]*len(df)), df.get(pos_col, [np.nan]*len(df))):
+                neg_val = np.nan if pd.isna(neg) or neg == 'N/A' else float(neg)
+                pos_val = np.nan if pd.isna(pos) or pos == 'N/A' else float(pos)
+                if np.isnan(neg_val) and np.isnan(pos_val):
+                    vals.append(np.nan)
+                elif np.isnan(neg_val):
+                    vals.append(pos_val)
+                elif np.isnan(pos_val):
+                    vals.append(neg_val)
+                else:
+                    vals.append((neg_val + pos_val) / 2)
+            tso_values[tso] = np.array(vals)
 
-        # --- Plotting ---
+        # --- Extract and Plot ---
         times = df['Zeit (ISO 8601)']
+        
         fig, ax = plt.subplots(figsize=(18, 7))
         
-        for tso in selected_tsos:
-            if tso in tso_values:
-                # ADDED: Uses color from fixed TSO_COLORS mapping
-                ax.plot(times, tso_values[tso], label=tso, color=TSO_COLORS[tso])
+        # Plot only if the checkbox is ticked
+        for tso, color in TSO_COLORS.items():
+            if tso_toggle[tso] and tso in tso_values:
+                ax.plot(times, tso_values[tso], label=tso, color=color)
         
         ax.legend()
         ax.set_xlabel("Time")
         ax.set_ylabel("€/MWh")
-        ax.set_title(f"{date_str} Picasso CBMP")
+        ax.set_title(f"{date_str} Picasso CBMP (Zoomed: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
+        
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax.grid(True)
+        ax.grid(True, which='major', axis='both')
         plt.tight_layout()
         st.pyplot(fig)
 
         # --- Statistics ---
         def percentage_equal(arr1, arr2):
             mask = ~np.isnan(arr1) & ~np.isnan(arr2)
-            return 100 * (arr1[mask] == arr2[mask]).sum() / mask.sum() if mask.sum() > 0 else 0.0
+            if mask.sum() == 0:
+                return 0.0
+            return 100 * (arr1[mask] == arr2[mask]).sum() / mask.sum()
+        
+        elia = tso_values.get('ELIA', np.full(len(times), np.nan))
+        hz50 = tso_values.get('50HZT', np.full(len(times), np.nan))
+        rte  = tso_values.get('RTE', np.full(len(times), np.nan))
+        tnl  = tso_values.get('TNL', np.full(len(times), np.nan))
+        
+        # Calculate Unique status based on your original logic
+        mask_unique = (
+            ~np.isnan(elia) & ~np.isnan(hz50) & ~np.isnan(rte) & ~np.isnan(tnl) &
+            (elia != hz50) & (elia != rte) & (elia != tnl)
+        )
+        denom = np.sum(~np.isnan(elia) & ~np.isnan(hz50) & ~np.isnan(rte) & ~np.isnan(tnl))
+        percent_elia_unique = 100 * np.sum(mask_unique) / denom if denom > 0 else 0
 
-        st.markdown("### Statistics (Current Selection)")
-        if 'ELIA' in tso_values:
-            elia = tso_values['ELIA']
-            for other in [t for t in selected_tsos if t != 'ELIA']:
-                st.write(f"**ELIA = {other}:** {percentage_equal(elia, tso_values[other]):.2f}%")
-        else:
-            st.info("Tick 'ELIA' to see comparison statistics.")
+        st.markdown("### Key Results (for selected range)")
+        # We always show these stats if the data is available, regardless of checkbox
+        st.write(f"**Percentage of time ELIA is unique:** {percent_elia_unique:.2f}%")
+        st.write(f"**Percentage of time ELIA = 50 Hertz:** {percentage_equal(elia, hz50):.2f}%")
+        st.write(f"**Percentage of time ELIA = RTE:** {percentage_equal(elia, rte):.2f}%")
+        st.write(f"**Percentage of time ELIA = Tennet NL:** {percentage_equal(elia, tnl):.2f}%")
 else:
     st.warning("No data available for the selected date.")
