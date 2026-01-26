@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime
+import io
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
@@ -27,7 +28,7 @@ def load_csv_for_date(date_str):
     if response.status_code != 200:
         st.error("Failed to retrieve data from API.")
         return None
-    df = pd.read_csv(pd.compat.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
+    df = pd.read_csv(io.StringIO(response.content.decode()), sep=';', parse_dates=['Zeit (ISO 8601)'])
     return df
 
 
@@ -102,4 +103,5 @@ if df is not None:
     st.write(f"**Percentage of time ELIA = RTE:** {perc_elia_RTE:.2f}%")
     st.write(f"**Percentage of time ELIA = TNL:** {perc_elia_TNL:.2f}%")
 else:
+
     st.warning("No data available for the selected date.")
