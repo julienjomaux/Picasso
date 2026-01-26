@@ -13,10 +13,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
 TSO_COLORS = {
-    '50HZT': '#1f77b4',  # Blue
-    'ELIA':  '#ff7f0e',  # Orange
-    'RTE':   '#2ca02c',  # Green
-    'TNL':   '#d62728',  # Red
+    '50HZT': '#1f77b4',
+    'ELIA':  '#ff7f0e',
+    'RTE':   '#2ca02c',
+    'TNL':   '#d62728'
 }
 
 # --- Sidebar: Date & Time Selection ---
@@ -33,19 +33,13 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# --- Sidebar: TSO + Line Style Selection (aligned on the same row) ---
+# --- Sidebar: TSO + Line Style (Dashed) Selection ---
 st.sidebar.subheader("TSOs to Display")
 tso_settings = {}
-cols = st.sidebar.columns([2, 1])
 for tso in TSO_COLORS.keys():
-    with cols[0]:
-        show = st.checkbox(f"{tso}", value=True, key=f"show_{tso}")
-    with cols[1]:
-        dash = st.checkbox("Dashed", value=False, key=f"dash_{tso}")
-    tso_settings[tso] = {
-        'show': show,
-        'dash': dash,
-    }
+    show = st.sidebar.checkbox(f"{tso}", value=True, key=f"show_{tso}")
+    dash = st.sidebar.checkbox("Dashed", value=False, key=f"dash_{tso}")
+    tso_settings[tso] = {'show': show, 'dash': dash}
 
 st.title(f"Picasso CBMP Data for {date_str}")
 
@@ -66,7 +60,7 @@ df_raw = load_csv_for_date(date_str)
 if df_raw is not None:
     start_time, end_time = time_range
     df = df_raw[
-        (df_raw['Zeit (ISO 8601)'].dt.time >= start_time) & 
+        (df_raw['Zeit (ISO 8601)'].dt.time >= start_time) &
         (df_raw['Zeit (ISO 8601)'].dt.time <= end_time)
     ].copy()
 
@@ -108,18 +102,21 @@ if df_raw is not None:
         if not np.any(valid):
             st.warning("No valid data available for selected TSOs in this time range.")
             st.stop()
-        y_min_default = float(np.nanmin(all_vals))
-        y_max_default = float(np.nanmax(all_vals))
 
-        # --- Sidebar: Y-axis Range Controls ---
+        y_min_data = float(np.nanmin(all_vals))
+        y_max_data = float(np.nanmax(all_vals))
+        y_pad = (y_max_data - y_min_data) * 0.05 if y_max_data > y_min_data else 1.0
+
+        # --- Sidebar: Y-axis Range Controls (default = min-20, max+20) ---
         st.sidebar.subheader("Y-Axis Limits")
-        y_pad = (y_max_default - y_min_default) * 0.05 if y_max_default > y_min_default else 1.0
+        data_range_min = float(np.floor(y_min_data - 20))
+        data_range_max = float(np.ceil(y_max_data + 20))
         user_ymin, user_ymax = st.sidebar.slider(
             "Select Y-Axis Range (€/MWh)",
-            min_value=float(np.floor(y_min_default - y_pad)),
-            max_value=float(np.ceil(y_max_default + y_pad)),
-            value=(float(np.floor(y_min_default)), float(np.ceil(y_max_default))),
-            step=0.5,
+            min_value=data_range_min,
+            max_value=data_range_max,
+            value=(data_range_min, data_range_max),
+            step=0.5
         )
 
         # --- Main Plot ---
