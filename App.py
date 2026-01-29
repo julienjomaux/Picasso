@@ -34,7 +34,7 @@ date_str = date_selected.strftime("%Y-%m-%d")
 st.title(f"Picasso CBMP Data for {date_str} (local time)")
 
 # --- Data Download/Load ---
-@st.cache_data(show_spinner=True)
+@st.cache_data(ttl=300, show_spinner=True)  # expires after 5 minutes
 def load_csv_for_date(date_str: str) -> pd.DataFrame | None:
     """
     Loads the CSV for a given date from the TransnetBW Picasso CBMP API
@@ -232,3 +232,4 @@ if df_raw is not None and not df_raw.empty:
 
 else:
     st.warning("No data available for the selected date.")
+
