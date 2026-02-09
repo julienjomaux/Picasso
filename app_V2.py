@@ -52,6 +52,7 @@ TSO_DISPLAY_NAMES = {
     "50HZT":  "50HZT (Germany)",
     "APG":    "APG (Austria)",
     "ELIA":   "Elia (Belgium)",
+    "TNL":    "TNL (Netherlands)",
     "RTE":    "RTE (France)",
     "CEPS":   "CEPS (Czechia)",
     "TERNA":  "TERNA (Italy)",
@@ -262,6 +263,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
 
