@@ -69,7 +69,6 @@ def load_csv_for_date(date_str: str):
         st.error(f"API error {response.status_code}")
         return None
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=";", parse_dates=["Zeit (ISO 8601)"])
-    # Ensure UTC then convert to local tz
     df["Zeit (ISO 8601)"] = pd.to_datetime(df["Zeit (ISO 8601)"], utc=True).dt.tz_convert(LOCAL_TZ)
     return df
 
@@ -104,7 +103,7 @@ if df.empty:
     st.stop()
 
 # ---------------------------------------------------------------
-# PREPARE TSO DATA (mean of NEG/POS, ignoring N/A and NaN)
+# PREPARE TSO DATA
 # ---------------------------------------------------------------
 tso_values = {}
 for tso in TSO_DISPLAY_NAMES.keys():
@@ -137,7 +136,7 @@ selected_tsos = st.multiselect(
     "Choose TSOs",
     options=available_tsos,
     format_func=lambda x: TSO_DISPLAY_NAMES[x],
-    default=available_tsos[:6]  # default to first six available
+    default=available_tsos[:6]
 )
 
 if not selected_tsos:
@@ -166,7 +165,7 @@ user_ymin, user_ymax = st.slider(
 )
 
 # ---------------------------------------------------------------
-# MAIN PLOT (all selected TSOs)
+# MAIN PLOT
 # ---------------------------------------------------------------
 fig, ax = plt.subplots(figsize=(18, 7))
 
@@ -185,7 +184,7 @@ plt.tight_layout()
 st.pyplot(fig)
 
 # ---------------------------------------------------------------
-# INDIVIDUAL SUBPLOTS (two per row)
+# INDIVIDUAL SUBPLOTS
 # ---------------------------------------------------------------
 st.header("Individual TSO Graphs")
 
@@ -203,7 +202,6 @@ for i, tso in enumerate(selected_tsos):
     ax_i.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax_i.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
 
-# Hide any unused axes if odd number
 for j in range(i + 1, len(axs)):
     axs[j].axis("off")
 
@@ -211,11 +209,7 @@ plt.tight_layout()
 st.pyplot(fig2)
 
 # ---------------------------------------------------------------
-# SIMILARITY MATRIX (percentage of equality pairwise)
-# - Compare only among selected TSOs
-# - Diagonal = 100%
-# - Upper triangle hidden (NaN -> blank)
-# - Heatmap coloring from red (0%) to green (100%)
+# SIMILARITY MATRIX (show ALL values)
 # ---------------------------------------------------------------
 def percentage_equal(arr1: np.ndarray, arr2: np.ndarray) -> float:
     mask = ~np.isnan(arr1) & ~np.isnan(arr2)
@@ -228,22 +222,20 @@ m = len(selected_tsos)
 sim_matrix = np.full((m, m), np.nan, dtype=float)
 
 for i in range(m):
-    for j in range(i + 1):  # fill diagonal and lower triangle only
+    for j in range(m):  # FULL MATRIX NOW
         if i == j:
             sim_matrix[i, j] = 100.0
         else:
             sim_matrix[i, j] = percentage_equal(tso_values[selected_tsos[i]], tso_values[selected_tsos[j]])
-        # Upper triangle remains NaN
 
 sim_df = pd.DataFrame(sim_matrix, index=labels, columns=labels)
 
 st.header("TSO Similarity Matrix (%)")
 
-# Style: green (100) to red (0) heatmap, hide upper triangle numbers
 styled = (
     sim_df.style
     .background_gradient(cmap="RdYlGn", vmin=0, vmax=100, axis=None)
-    .format(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
+    .format(lambda v: f"{v:.2f}%" if not pd.isna(v) else "")
     .set_properties(**{"text-align": "center"})
     .set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
 )
