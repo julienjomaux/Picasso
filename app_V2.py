@@ -16,7 +16,6 @@ st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
 # SETTINGS UI (top of page)
 # ---------------------------------------------------------------
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
-st.header("Settings")
 date_selected = st.date_input(
     "Select a date (Europe/Brussels)",
     value=datetime.now(LOCAL_TZ).date(),
@@ -263,6 +262,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
 
