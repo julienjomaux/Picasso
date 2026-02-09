@@ -12,6 +12,8 @@ import itertools
 
 st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
 
+st.title(f"Picasso aFRR prices for {date_str} ")
+
 # Description and data source
 # -------------------------------
 st.markdown(
@@ -73,7 +75,7 @@ date_selected = st.date_input(
     min_value=date(2020, 1, 1)
 )
 date_str = date_selected.strftime("%Y-%m-%d")
-st.title(f"Picasso CBMP Data for {date_str} (local time)")
+
 
 # ---------------------------------------------------------------
 # DATA LOADING
@@ -258,5 +260,6 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
