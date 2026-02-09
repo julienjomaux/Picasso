@@ -15,6 +15,7 @@ st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
 # ---------------------------------------------------------------
 # SETTINGS UI (top of page)
 # ---------------------------------------------------------------
+LOCAL_TZ = ZoneInfo("Europe/Brussels")
 st.header("Settings")
 date_selected = st.date_input(
     "Select a date (Europe/Brussels)",
@@ -42,9 +43,8 @@ This app presents the aFRR prices (CBMP for Cross-border Marginal Prices) from t
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 
-LOCAL_TZ = ZoneInfo("Europe/Brussels")
+
 
 # ---------------------------------------------------------------
 # TSO definitions (includes AMP, TNG, TTG; CEPS corrected)
@@ -263,6 +263,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
 
