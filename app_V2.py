@@ -10,11 +10,13 @@ import urllib3
 from zoneinfo import ZoneInfo
 import itertools
 
+st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
+
 # Description and data source
 # -------------------------------
 st.markdown(
     """
-This app presents the aFRR prices (CBMP for Cross-border Marginal Prices) from teh Picasso platform
+This app presents the aFRR prices (CBMP for Cross-border Marginal Prices) from the Picasso platform. aFRR prices vary every 4 seconds.
 
 **Data source:** [Transnet](https://www.transnetbw.de/en/energy-market/ancillary-services/picasso)
 
@@ -256,4 +258,5 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
