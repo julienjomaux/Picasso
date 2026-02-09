@@ -17,7 +17,7 @@ st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 # ---------------------------------------------------------------
-# TSO definitions (updated: added AMP, TNG, TTG; CEPX -> CEPS)
+# TSO definitions (includes AMP, TNG, TTG; CEPS corrected)
 # ---------------------------------------------------------------
 TSO_DISPLAY_NAMES = {
     "50HZT":  "50HZT (Germany)",
@@ -214,7 +214,8 @@ st.pyplot(fig2)
 # SIMILARITY MATRIX (percentage of equality pairwise)
 # - Compare only among selected TSOs
 # - Diagonal = 100%
-# - Upper triangle hidden (NaN -> blank in Styler)
+# - Upper triangle hidden (NaN -> blank)
+# - Heatmap coloring from red (0%) to green (100%)
 # ---------------------------------------------------------------
 def percentage_equal(arr1: np.ndarray, arr2: np.ndarray) -> float:
     mask = ~np.isnan(arr1) & ~np.isnan(arr2)
@@ -232,15 +233,19 @@ for i in range(m):
             sim_matrix[i, j] = 100.0
         else:
             sim_matrix[i, j] = percentage_equal(tso_values[selected_tsos[i]], tso_values[selected_tsos[j]])
-        # Upper triangle (j > i) remains NaN by design
+        # Upper triangle remains NaN
 
 sim_df = pd.DataFrame(sim_matrix, index=labels, columns=labels)
 
 st.header("TSO Similarity Matrix (%)")
+
+# Style: green (100) to red (0) heatmap, hide upper triangle numbers
 styled = (
     sim_df.style
+    .background_gradient(cmap="RdYlGn", vmin=0, vmax=100, axis=None)
     .format(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
     .set_properties(**{"text-align": "center"})
     .set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
 )
+
 st.dataframe(styled, use_container_width=True)
