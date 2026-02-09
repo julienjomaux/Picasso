@@ -8,6 +8,7 @@ from datetime import datetime, date
 import io
 import urllib3
 from zoneinfo import ZoneInfo
+import itertools
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -16,35 +17,34 @@ st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 # ---------------------------------------------------------------
-# TSO definitions
+# TSO definitions (updated: added AMP, TNG, TTG; CEPX -> CEPS)
 # ---------------------------------------------------------------
 TSO_DISPLAY_NAMES = {
-    "50HZT": "50HZT (Germany)",
-    "APG": "APG (Austria)",
-    "ELIA": "Elia (Belgium)",
-    "RTE": "RTE (France)",
-    "CEPX": "CEPX (Czechia)",
-    "TERNA": "TERNA (Italy)",
-    "ESO": "ESO (Bulgaria)",
-    "ENDK1": "ENDK1 (Denmark 1)",
-    "ENDK2": "ENDK2 (Denmark 2)",
-    "SEPS": "SEPS (Slovakia)",
-    "LITGRID": "LITGRID (Lithuania)",
-    "ADMIE": "ADMIE (Greece)",
-    "FINGRID": "FINGRID (Finland)",
-    "ELERING": "ELERING (Estonia)",
-    "AST": "AST (Latvia)",
-    "REE": "REE (Spain)",
-    "PSE": "PSE (Poland)"
+    "50HZT":  "50HZT (Germany)",
+    "APG":    "APG (Austria)",
+    "ELIA":   "Elia (Belgium)",
+    "RTE":    "RTE (France)",
+    "CEPS":   "CEPS (Czechia)",
+    "TERNA":  "TERNA (Italy)",
+    "ESO":    "ESO (Bulgaria)",
+    "ENDK1":  "ENDK1 (Denmark 1)",
+    "ENDK2":  "ENDK2 (Denmark 2)",
+    "SEPS":   "SEPS (Slovakia)",
+    "LITGRID":"LITGRID (Lithuania)",
+    "ADMIE":  "ADMIE (Greece)",
+    "FINGRID":"FINGRID (Finland)",
+    "ELERING":"ELERING (Estonia)",
+    "AST":    "AST (Latvia)",
+    "REE":    "REE (Spain)",
+    "PSE":    "PSE (Poland)",
+    "AMP":    "AMP (Germany)",
+    "TNG":    "TNG (Germany)",
+    "TTG":    "TTG (Germany)"
 }
 
-# Give them colors automatically if not in your original dict:
-import itertools
+# Color cycle for all TSOs
 COLOR_CYCLE = itertools.cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
-
-TSO_COLORS = {}
-for tso in TSO_DISPLAY_NAMES.keys():
-    TSO_COLORS[tso] = next(COLOR_CYCLE)
+TSO_COLORS = {tso: next(COLOR_CYCLE) for tso in TSO_DISPLAY_NAMES.keys()}
 
 # ---------------------------------------------------------------
 # SETTINGS UI (top of page)
@@ -53,7 +53,7 @@ st.header("Settings")
 date_selected = st.date_input(
     "Select a date (Europe/Brussels)",
     value=datetime.now(LOCAL_TZ).date(),
-    min_value=date(2020,1,1)
+    min_value=date(2020, 1, 1)
 )
 date_str = date_selected.strftime("%Y-%m-%d")
 st.title(f"Picasso CBMP Data for {date_str} (local time)")
@@ -69,13 +69,14 @@ def load_csv_for_date(date_str: str):
         st.error(f"API error {response.status_code}")
         return None
     df = pd.read_csv(io.StringIO(response.content.decode()), sep=";", parse_dates=["Zeit (ISO 8601)"])
+    # Ensure UTC then convert to local tz
     df["Zeit (ISO 8601)"] = pd.to_datetime(df["Zeit (ISO 8601)"], utc=True).dt.tz_convert(LOCAL_TZ)
     return df
 
 df_raw = load_csv_for_date(date_str)
 
 if df_raw is None or df_raw.empty:
-    st.warning("No data available for selected date.")
+    st.warning("No data available for the selected date.")
     st.stop()
 
 # ---------------------------------------------------------------
@@ -103,7 +104,7 @@ if df.empty:
     st.stop()
 
 # ---------------------------------------------------------------
-# PREPARE TSO DATA
+# PREPARE TSO DATA (mean of NEG/POS, ignoring N/A and NaN)
 # ---------------------------------------------------------------
 tso_values = {}
 for tso in TSO_DISPLAY_NAMES.keys():
@@ -136,7 +137,7 @@ selected_tsos = st.multiselect(
     "Choose TSOs",
     options=available_tsos,
     format_func=lambda x: TSO_DISPLAY_NAMES[x],
-    default=available_tsos[:6]  # first six as default
+    default=available_tsos[:6]  # default to first six available
 )
 
 if not selected_tsos:
@@ -148,6 +149,9 @@ if not selected_tsos:
 # ---------------------------------------------------------------
 all_vals = np.concatenate([tso_values[tso] for tso in selected_tsos])
 valid_vals = all_vals[~np.isnan(all_vals)]
+if valid_vals.size == 0:
+    st.warning("No valid numerical data for the selected TSOs in this time range.")
+    st.stop()
 
 data_range_min = float(np.floor(valid_vals.min() - 20))
 data_range_max = float(np.ceil(valid_vals.max() + 20))
@@ -169,14 +173,14 @@ fig, ax = plt.subplots(figsize=(18, 7))
 for tso in selected_tsos:
     ax.plot(times, tso_values[tso], label=TSO_DISPLAY_NAMES[tso], color=TSO_COLORS[tso])
 
-ax.set_title(f"{date_str} Picasso CBMP")
+ax.set_title(f"{date_str} Picasso CBMP (Local: {start_time.strftime('%H:%M')} – {end_time.strftime('%H:%M')})")
 ax.set_xlabel("Time (Europe/Brussels)")
 ax.set_ylabel("€/MWh")
 ax.set_ylim(user_ymin, user_ymax)
 ax.xaxis.set_major_locator(mdates.AutoDateLocator())
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
 ax.grid(True)
-ax.legend()
+ax.legend(ncols=2)
 plt.tight_layout()
 st.pyplot(fig)
 
@@ -191,17 +195,52 @@ fig2, axs = plt.subplots(rows, 2, figsize=(20, 4 * rows), sharex=True, sharey=Tr
 axs = axs.flatten()
 
 for i, tso in enumerate(selected_tsos):
-    ax = axs[i]
-    ax.plot(times, tso_values[tso], color=TSO_COLORS[tso])
-    ax.set_title(TSO_DISPLAY_NAMES[tso])
-    ax.grid(True)
-    ax.set_ylim(user_ymin, user_ymax)
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
+    ax_i = axs[i]
+    ax_i.plot(times, tso_values[tso], color=TSO_COLORS[tso])
+    ax_i.set_title(TSO_DISPLAY_NAMES[tso])
+    ax_i.set_ylim(user_ymin, user_ymax)
+    ax_i.grid(True)
+    ax_i.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax_i.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
 
-# Hide unused axes
-for j in range(i+1, len(axs)):
+# Hide any unused axes if odd number
+for j in range(i + 1, len(axs)):
     axs[j].axis("off")
 
 plt.tight_layout()
 st.pyplot(fig2)
+
+# ---------------------------------------------------------------
+# SIMILARITY MATRIX (percentage of equality pairwise)
+# - Compare only among selected TSOs
+# - Diagonal = 100%
+# - Upper triangle hidden (NaN -> blank in Styler)
+# ---------------------------------------------------------------
+def percentage_equal(arr1: np.ndarray, arr2: np.ndarray) -> float:
+    mask = ~np.isnan(arr1) & ~np.isnan(arr2)
+    if mask.sum() == 0:
+        return np.nan
+    return 100.0 * np.sum(arr1[mask] == arr2[mask]) / mask.sum()
+
+labels = [TSO_DISPLAY_NAMES[t] for t in selected_tsos]
+m = len(selected_tsos)
+sim_matrix = np.full((m, m), np.nan, dtype=float)
+
+for i in range(m):
+    for j in range(i + 1):  # fill diagonal and lower triangle only
+        if i == j:
+            sim_matrix[i, j] = 100.0
+        else:
+            sim_matrix[i, j] = percentage_equal(tso_values[selected_tsos[i]], tso_values[selected_tsos[j]])
+        # Upper triangle (j > i) remains NaN by design
+
+sim_df = pd.DataFrame(sim_matrix, index=labels, columns=labels)
+
+st.header("TSO Similarity Matrix (%)")
+styled = (
+    sim_df.style
+    .format(lambda v: "" if pd.isna(v) else f"{v:.2f}%")
+    .set_properties(**{"text-align": "center"})
+    .set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
+)
+st.dataframe(styled, use_container_width=True)
