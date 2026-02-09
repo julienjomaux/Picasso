@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import itertools
 
 st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
-
+date_str = date_selected.strftime("%Y-%m-%d")
 st.title(f"Picasso aFRR prices for {date_str} ")
 
 # Description and data source
@@ -74,7 +74,7 @@ date_selected = st.date_input(
     value=datetime.now(LOCAL_TZ).date(),
     min_value=date(2020, 1, 1)
 )
-date_str = date_selected.strftime("%Y-%m-%d")
+
 
 
 # ---------------------------------------------------------------
@@ -260,6 +260,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
 
