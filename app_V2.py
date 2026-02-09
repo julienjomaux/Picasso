@@ -11,6 +11,17 @@ from zoneinfo import ZoneInfo
 import itertools
 
 st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
+
+# ---------------------------------------------------------------
+# SETTINGS UI (top of page)
+# ---------------------------------------------------------------
+st.header("Settings")
+date_selected = st.date_input(
+    "Select a date (Europe/Brussels)",
+    value=datetime.now(LOCAL_TZ).date(),
+    min_value=date(2020, 1, 1)
+)
+
 date_str = date_selected.strftime("%Y-%m-%d")
 st.title(f"Picasso aFRR prices for {date_str} ")
 
@@ -65,15 +76,7 @@ TSO_DISPLAY_NAMES = {
 COLOR_CYCLE = itertools.cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
 TSO_COLORS = {tso: next(COLOR_CYCLE) for tso in TSO_DISPLAY_NAMES.keys()}
 
-# ---------------------------------------------------------------
-# SETTINGS UI (top of page)
-# ---------------------------------------------------------------
-st.header("Settings")
-date_selected = st.date_input(
-    "Select a date (Europe/Brussels)",
-    value=datetime.now(LOCAL_TZ).date(),
-    min_value=date(2020, 1, 1)
-)
+
 
 
 
@@ -260,6 +263,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
 
 
 
