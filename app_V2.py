@@ -10,6 +10,21 @@ import urllib3
 from zoneinfo import ZoneInfo
 import itertools
 
+# Description and data source
+# -------------------------------
+st.markdown(
+    """
+This app presents the aFRR prices (CBMP for Cross-border Marginal Prices) from teh Picasso platform
+
+**Data source:** [Transnet](https://www.transnetbw.de/en/energy-market/ancillary-services/picasso)
+
+**More insights:** [GEM Energy Analytics](https://gemenergyanalytics.substack.com/)  
+**Connect with me:** [Julien Jomaux](https://www.linkedin.com/in/julien-jomaux/)  
+**Email me:** [julien.jomaux@gmail.com](mailto:julien.jomaux@gmail.com)
+"""
+)
+
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="Picasso CBMP Visualizer", layout="wide")
@@ -241,3 +256,4 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
+
