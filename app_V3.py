@@ -191,7 +191,12 @@ def tso_widget(key, default_n=6):
 
 def yaxis_widget(key, selected, mask, values_source=None):
     """Y-axis range slider based on the valid values of `selected` TSOs
-    within `mask`. Returns (ymin, ymax) or (None, None) if no data."""
+    within `mask`. Returns (ymin, ymax) or (None, None) if no data.
+
+    Includes a "Fit Y-axis to data" button that snaps the slider tightly
+    around the actual min/max of the currently selected data (with a small
+    visual margin), so all points are visible as clearly as possible.
+    """
     source = values_source if values_source is not None else tso_values_all
     if not selected:
         return None, None
@@ -202,16 +207,40 @@ def yaxis_widget(key, selected, mask, values_source=None):
     valid_vals = all_vals[~np.isnan(all_vals)]
     if valid_vals.size == 0:
         return None, None
-    dmin = float(np.floor(valid_vals.min() - 20))
-    dmax = float(np.ceil(valid_vals.max() + 20))
-    return st.slider(
-        "Select Y-axis range (€/MWh)",
-        min_value=dmin,
-        max_value=dmax,
-        value=(dmin, dmax),
-        step=0.5,
-        key=key,
-    )
+
+    data_min = float(valid_vals.min())
+    data_max = float(valid_vals.max())
+
+    # Wide bounds for the slider itself, so the user can still zoom out.
+    dmin = float(np.floor(data_min - 20))
+    dmax = float(np.ceil(data_max + 20))
+
+    # Tight "fit to data" target: actual min/max plus a small visual margin
+    # (so points don't sit glued to the plot border).
+    margin = max((data_max - data_min) * 0.05, 0.5)
+    fit_min = max(float(np.floor((data_min - margin) * 10) / 10), dmin)
+    fit_max = min(float(np.ceil((data_max + margin) * 10) / 10), dmax)
+
+    # If a value is already stored for this widget (from a previous run or a
+    # previous, different TSO/time selection), keep it but clamp it back
+    # inside the current bounds so the slider never errors out.
+    if key in st.session_state:
+        lo, hi = st.session_state[key]
+        lo = min(max(lo, dmin), dmax)
+        hi = min(max(hi, dmin), dmax)
+        if hi < lo:
+            lo, hi = dmin, dmax
+        st.session_state[key] = (lo, hi)
+
+    if st.button("🔍 Fit Y-axis to data", key=f"{key}_fit_btn",
+                 help="Snap the Y-axis range to tightly fit the currently selected data"):
+        st.session_state[key] = (fit_min, fit_max)
+
+    slider_kwargs = dict(min_value=dmin, max_value=dmax, step=0.5, key=key)
+    if key not in st.session_state:
+        slider_kwargs["value"] = (dmin, dmax)
+
+    return st.slider("Select Y-axis range (€/MWh)", **slider_kwargs)
 
 
 def plot_direction_staircase(ax_i, times_series, values, categories,
@@ -280,27 +309,38 @@ def qh_direction_averages(values, categories, qh_bucket_series, qh_idx):
     return out
 
 
-def classify_qh_rows(has_up, has_down, has_neutral):
-    """Mutually-exclusive classification of each quarter-hour, based on
-    which directions had at least one price point in it."""
-    labels = []
-    for u, d, ntr in zip(has_up, has_down, has_neutral):
-        if not u and not d and not ntr:
-            labels.append("No data")
-        elif u and d:
-            labels.append("Both Up & Down")
-        elif u and not d and not ntr:
-            labels.append("Only Up")
-        elif d and not u and not ntr:
-            labels.append("Only Down")
-        elif ntr and not u and not d:
-            labels.append("Only Neutral")
-        else:
-            labels.append("Other mix")
-    return labels
+def qh_direction_combo_counts(has_up, has_down, has_neutral):
+    """
+    Counts quarter-hours into 4 mutually-exclusive buckets based on which
+    directions had at least one price point in it:
+      - "Both Up & Down"           -> an Up average AND a Down average exist
+                                       (neutral may or may not also be present)
+      - "Only Up (± Neutral)"      -> an Up average exists, no Down average
+                                       (neutral may or may not also be present)
+      - "Only Down (± Neutral)"    -> a Down average exists, no Up average
+                                       (neutral may or may not also be present)
+      - "Only Neutral"             -> only a Neutral average exists
+    Quarter-hours with no data at all in any direction are not counted in
+    any of the 4 buckets (their sum can be less than the total QH count).
+    """
+    has_up = np.asarray(has_up, dtype=bool)
+    has_down = np.asarray(has_down, dtype=bool)
+    has_neutral = np.asarray(has_neutral, dtype=bool)
+
+    both = int(np.sum(has_up & has_down))
+    only_up = int(np.sum(has_up & ~has_down))
+    only_down = int(np.sum(has_down & ~has_up))
+    only_neutral = int(np.sum(has_neutral & ~has_up & ~has_down))
+
+    return {
+        "Both Up & Down": both,
+        "Only Up (± Neutral)": only_up,
+        "Only Down (± Neutral)": only_down,
+        "Only Neutral": only_neutral,
+    }
 
 
-QH_CATEGORY_ORDER = ["Both Up & Down", "Only Up", "Only Down", "Only Neutral", "Other mix", "No data"]
+QH_CATEGORY_ORDER = ["Both Up & Down", "Only Up (± Neutral)", "Only Down (± Neutral)", "Only Neutral"]
 
 
 # =================================================================
@@ -505,11 +545,10 @@ if tsos3 and directions3 and qh_index3 is not None and len(qh_index3) > 0:
             })
 
         # --- Count of QH per direction combination ---
-        labels = classify_qh_rows(has_up.values, has_down.values, has_neutral.values)
-        counts = pd.Series(labels).value_counts()
+        combo_counts = qh_direction_combo_counts(has_up.values, has_down.values, has_neutral.values)
         row = {"TSO": TSO_DISPLAY_NAMES[tso]}
         for cat in QH_CATEGORY_ORDER:
-            row[cat] = int(counts.get(cat, 0))
+            row[cat] = combo_counts[cat]
         row["Total QH"] = int(len(qh_index3))
         count_rows.append(row)
 
@@ -518,7 +557,11 @@ if tsos3 and directions3 and qh_index3 is not None and len(qh_index3) > 0:
     st.dataframe(diff_df.style.format("{:.2f}", na_rep="—"), width="stretch")
 
     count_df = pd.DataFrame(count_rows).set_index("TSO")
-    st.markdown("**Number of quarter-hours by direction combination**")
+    st.markdown(
+        "**Number of quarter-hours by direction combination** "
+        "(\"± Neutral\" means neutral prices may or may not also be present in that quarter-hour; "
+        "the 4 columns can sum to less than Total QH if some quarter-hours have no data at all)"
+    )
     st.dataframe(count_df, width="stretch")
 
 # =================================================================
