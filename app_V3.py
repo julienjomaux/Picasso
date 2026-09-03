@@ -189,13 +189,27 @@ def tso_widget(key, default_n=6):
     )
 
 
-def yaxis_widget(key, selected, mask, values_source=None):
+_YAXIS_STEP = 0.5
+
+
+def _round_down_to_step(x, step=_YAXIS_STEP):
+    return float(np.floor(x / step) * step)
+
+
+def _round_up_to_step(x, step=_YAXIS_STEP):
+    return float(np.ceil(x / step) * step)
+
+
+def yaxis_widget(key, selected, start_t, end_t, mask, values_source=None):
     """Y-axis range slider based on the valid values of `selected` TSOs
     within `mask`. Returns (ymin, ymax) or (None, None) if no data.
 
-    Includes a "Fit Y-axis to data" button that snaps the slider tightly
-    around the actual min/max of the currently selected data (with a small
-    visual margin), so all points are visible as clearly as possible.
+    Includes a "Fit to data" button, placed right next to the slider, that
+    snaps THIS slider only (never another section's) tightly around the
+    actual min/max of the data currently shown here. If the TSO selection
+    or time range for this section changes, any previous manual range is
+    dropped automatically so the slider falls back to a fresh, sensible
+    default instead of clamping a now-irrelevant custom range.
     """
     source = values_source if values_source is not None else tso_values_all
     if not selected:
@@ -212,35 +226,47 @@ def yaxis_widget(key, selected, mask, values_source=None):
     data_max = float(valid_vals.max())
 
     # Wide bounds for the slider itself, so the user can still zoom out.
-    dmin = float(np.floor(data_min - 20))
-    dmax = float(np.ceil(data_max + 20))
+    dmin = _round_down_to_step(data_min - 20)
+    dmax = _round_up_to_step(data_max + 20)
 
-    # Tight "fit to data" target: actual min/max plus a small visual margin
-    # (so points don't sit glued to the plot border).
-    margin = max((data_max - data_min) * 0.05, 0.5)
-    fit_min = max(float(np.floor((data_min - margin) * 10) / 10), dmin)
-    fit_max = min(float(np.ceil((data_max + margin) * 10) / 10), dmax)
+    # Tight "fit to data" target: actual min/max plus a small visual margin,
+    # rounded to the slider's own step so the handles land cleanly on the
+    # slider's grid instead of an off-step value.
+    margin = max((data_max - data_min) * 0.05, _YAXIS_STEP)
+    fit_min = max(_round_down_to_step(data_min - margin), dmin)
+    fit_max = min(_round_up_to_step(data_max + margin), dmax)
+    if fit_max <= fit_min:
+        fit_min, fit_max = dmin, dmax
 
-    # If a value is already stored for this widget (from a previous run or a
-    # previous, different TSO/time selection), keep it but clamp it back
-    # inside the current bounds so the slider never errors out.
-    if key in st.session_state:
-        lo, hi = st.session_state[key]
-        lo = min(max(lo, dmin), dmax)
-        hi = min(max(hi, dmin), dmax)
-        if hi < lo:
-            lo, hi = dmin, dmax
-        st.session_state[key] = (lo, hi)
+    # This widget's own identity: which TSOs + which time range it is
+    # currently showing. If that changes (in THIS section only — other
+    # sections have their own key/signature), any previously stored value
+    # for THIS slider is no longer meaningful, so drop it rather than
+    # clamp it into the new bounds.
+    signature = (tuple(sorted(selected)), start_t, end_t)
+    sig_key = f"{key}__sig"
+    if st.session_state.get(sig_key) != signature:
+        st.session_state.pop(key, None)
+        st.session_state[sig_key] = signature
 
-    if st.button("🔍 Fit Y-axis to data", key=f"{key}_fit_btn",
-                 help="Snap the Y-axis range to tightly fit the currently selected data"):
+    col_slider, col_btn = st.columns([5, 2])
+    with col_btn:
+        st.markdown("<div style='margin-top:1.7em'></div>", unsafe_allow_html=True)
+        fit_clicked = st.button(
+            "🔍 Fit to data",
+            key=f"{key}_fit_btn",
+            help="Fit the Y-axis of THIS chart only to its currently displayed data — other sections are not affected.",
+        )
+    if fit_clicked:
         st.session_state[key] = (fit_min, fit_max)
 
-    slider_kwargs = dict(min_value=dmin, max_value=dmax, step=0.5, key=key)
+    slider_kwargs = dict(min_value=dmin, max_value=dmax, step=_YAXIS_STEP, key=key)
     if key not in st.session_state:
         slider_kwargs["value"] = (dmin, dmax)
 
-    return st.slider("Select Y-axis range (€/MWh)", **slider_kwargs)
+    with col_slider:
+        result = st.slider("Select Y-axis range (€/MWh)", **slider_kwargs)
+    return result
 
 
 def plot_direction_staircase(ax_i, times_series, values, categories,
@@ -352,7 +378,7 @@ with st.expander("⚙️ Chart controls", expanded=True):
     start1, end1 = time_range_widget("sec1_time")
     tsos1 = tso_widget("sec1_tso")
     mask1 = time_mask(start1, end1)
-    ymin1, ymax1 = yaxis_widget("sec1_yaxis", tsos1, mask1)
+    ymin1, ymax1 = yaxis_widget("sec1_yaxis", tsos1, start1, end1, mask1)
 
 if not tsos1:
     st.warning("Please select at least one TSO to display the combined chart.")
@@ -383,7 +409,7 @@ with st.expander("⚙️ Chart controls", expanded=True):
     start2, end2 = time_range_widget("sec2_time")
     tsos2 = tso_widget("sec2_tso")
     mask2 = time_mask(start2, end2)
-    ymin2, ymax2 = yaxis_widget("sec2_yaxis", tsos2, mask2)
+    ymin2, ymax2 = yaxis_widget("sec2_yaxis", tsos2, start2, end2, mask2)
 
 st.caption("Red = aFRR up bid only · Green = aFRR down bid only · Blue = neutral (both directions present)")
 
@@ -423,7 +449,7 @@ with st.expander("⚙️ Chart controls", expanded=True):
     start3, end3 = time_range_widget("sec3_time")
     tsos3 = tso_widget("sec3_tso")
     mask3 = time_mask(start3, end3)
-    ymin3, ymax3 = yaxis_widget("sec3_yaxis", tsos3, mask3)
+    ymin3, ymax3 = yaxis_widget("sec3_yaxis", tsos3, start3, end3, mask3)
     directions3 = st.multiselect(
         "Directions to show",
         options=["up", "down", "neutral"],
@@ -573,7 +599,7 @@ with st.expander("⚙️ Chart controls", expanded=True):
     start4, end4 = time_range_widget("sec4_time")
     tsos4 = tso_widget("sec4_tso")
     mask4 = time_mask(start4, end4)
-    ymin4, ymax4 = yaxis_widget("sec4_yaxis", tsos4, mask4)
+    ymin4, ymax4 = yaxis_widget("sec4_yaxis", tsos4, start4, end4, mask4)
 
 st.caption(
     "The Y-axis range restricts the comparison to price points within that range: values outside "
