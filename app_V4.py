@@ -1,664 +1,705 @@
-import streamlit as st
-import requests
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.collections import LineCollection
-from matplotlib.lines import Line2D
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, date
-import io
-import urllib3
-from zoneinfo import ZoneInfo
-import itertools
-
-st.set_page_config(page_title="Picasso aFRR prices - Visualizer", layout="wide")
-
-# ---------------------------------------------------------------
-# SETTINGS UI (top of page)
-# ---------------------------------------------------------------
-LOCAL_TZ = ZoneInfo("Europe/Brussels")
-date_selected = st.date_input(
-    "Select a date (Europe/Brussels)",
-    value=datetime.now(LOCAL_TZ).date(),
-    min_value=date(2020, 1, 1)
-)
-
-date_str = date_selected.strftime("%Y-%m-%d")
-st.title(f"Picasso aFRR prices for {date_str} ")
-
-# Description and data source
-# -------------------------------
-st.markdown(
-    """
-This app presents the aFRR prices (CBMP for Cross-border Marginal Prices) from the Picasso platform. aFRR prices vary every 4 seconds.
-
-**Data source:** [Transnet](https://www.transnetbw.de/en/energy-market/ancillary-services/picasso)
-
-**More insights:** [GEM Energy Analytics](https://gemenergyanalytics.substack.com/)  
-**Connect with me:** [Julien Jomaux](https://www.linkedin.com/in/julien-jomaux/)  
-**Email me:** [julien.jomaux@gmail.com](mailto:julien.jomaux@gmail.com)
 """
+PICASSO aFRR CBMP visualizer — V5
+Gem Energy Analytics · Julien Jomaux
+
+Data: TransnetBW PICASSO CBMP API (4-second cross-border marginal prices).
+"""
+import io
+import time
+from datetime import datetime, date, time as dtime
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+import urllib3
+from plotly.subplots import make_subplots
+from zoneinfo import ZoneInfo
+
+st.set_page_config(
+    page_title="Picasso aFRR prices - Visualizer",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
-
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# =================================================================
+# CONSTANTS
+# =================================================================
+LOCAL_TZ = ZoneInfo("Europe/Brussels")
+API_URL = "https://api.transnetbw.de/picasso-cbmp/csv?date={d}&lang=de"
+BRAND = "#0b6a6a"
 
-
-
-# ---------------------------------------------------------------
-# TSO definitions (includes AMP, TNG, TTG; CEPS corrected)
-# ---------------------------------------------------------------
-TSO_DISPLAY_NAMES = {
-    "50HZT":  "50HZT (Germany)",
-    "APG":    "APG (Austria)",
-    "ELIA":   "Elia (Belgium)",
-    "TNL":    "TNL (Netherlands)",
-    "RTE":    "RTE (France)",
-    "CEPS":   "CEPS (Czechia)",
-    "TERNA":  "TERNA (Italy)",
-    "ESO":    "ESO (Bulgaria)",
-    "ENDK1":  "ENDK1 (Denmark 1)",
-    "ENDK2":  "ENDK2 (Denmark 2)",
-    "SEPS":   "SEPS (Slovakia)",
-    "LITGRID":"LITGRID (Lithuania)",
-    "ADMIE":  "ADMIE (Greece)",
-    "FINGRID":"FINGRID (Finland)",
-    "ELERING":"ELERING (Estonia)",
-    "AST":    "AST (Latvia)",
-    "REE":    "REE (Spain)",
-    "PSE":    "PSE (Poland)",
-    "AMP":    "AMP (Germany)",
-    "TNG":    "TNG (Germany)",
-    "TTG":    "TTG (Germany)"
+POSTS = {
+    "picasso": ("PICASSO: insights and data",
+                "https://gemenergyanalytics.substack.com/p/picasso-insights-and-data"),
+    "overlap": ("Overlapping aFRR merit orders and their impact on CBMP",
+                "https://gemenergyanalytics.substack.com/p/overlapping-afrr-merit-orders-and"),
+    "overlap2": ("Going further on overlapping aFRR merit orders",
+                 "https://gemenergyanalytics.substack.com/p/going-further-on-overlapping-afrr"),
+    "intro": ("An intro to the European balancing world",
+              "https://gemenergyanalytics.substack.com/p/an-intro-to-the-european-balancing"),
+    "reserves": ("European power reserves: part 2 – aFRR",
+                 "https://gemenergyanalytics.substack.com/p/european-power-reserves-part-2-afrr"),
+    "imbalance": ("The impact of aFRR on imbalance prices",
+                  "https://gemenergyanalytics.substack.com/p/the-impact-of-afrr-on-imbalance-prices"),
 }
 
-# Color cycle for all TSOs
-COLOR_CYCLE = itertools.cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
-TSO_COLORS = {tso: next(COLOR_CYCLE) for tso in TSO_DISPLAY_NAMES.keys()}
 
-# Colors used to encode the aFRR direction of a price point.
-# - "up"      -> only a POS (upward) price is available for that timestamp -> aFRR up bid only
-# - "down"    -> only a NEG (downward) price is available for that timestamp -> aFRR down bid only
-# - "neutral" -> both POS and NEG prices are available -> no net aFRR demand
-DIRECTION_COLORS = {"up": "red", "down": "green", "neutral": "blue"}
-DIRECTION_LABELS = {"up": "Up", "down": "Down", "neutral": "Neutral"}
+def post_link(key):
+    title, url = POSTS[key]
+    return f"[{title}]({url})"
 
 
+# code -> (country code, TSO name, country). Unknown codes found in the API
+# are still shown automatically, with their raw code as label.
+TSO_INFO = {
+    "ELIA":    ("BE", "Elia", "Belgium"),
+    "RTE":     ("FR", "RTE", "France"),
+    "50HZT":   ("DE", "50Hertz", "Germany"),
+    "AMP":     ("DE", "Amprion", "Germany"),
+    "TNG":     ("DE", "TransnetBW", "Germany"),
+    "TTG":     ("DE", "TenneT DE", "Germany"),
+    "TNL":     ("NL", "TenneT NL", "Netherlands"),
+    "APG":     ("AT", "APG", "Austria"),
+    "SG":      ("CH", "Swissgrid", "Switzerland"),
+    "CEPS":    ("CZ", "ČEPS", "Czechia"),
+    "SEPS":    ("SK", "SEPS", "Slovakia"),
+    "PSE":     ("PL", "PSE", "Poland"),
+    "MAVIR":   ("HU", "MAVIR", "Hungary"),
+    "ELES":    ("SI", "ELES", "Slovenia"),
+    "TERNA":   ("IT", "Terna", "Italy"),
+    "REE":     ("ES", "Red Eléctrica", "Spain"),
+    "ADMIE":   ("GR", "IPTO", "Greece"),
+    "ESO":     ("BG", "ESO", "Bulgaria"),
+    "ENDK1":   ("DK1", "Energinet", "Denmark West"),
+    "ENDK2":   ("DK2", "Energinet", "Denmark East"),
+    "FINGRID": ("FI", "Fingrid", "Finland"),
+    "ELERING": ("EE", "Elering", "Estonia"),
+    "AST":     ("LV", "AST", "Latvia"),
+    "LITGRID": ("LT", "Litgrid", "Lithuania"),
+}
+DEFAULT_TSOS = ["ELIA", "RTE", "50HZT"]
+GERMAN_TSOS = ["50HZT", "AMP", "TNG", "TTG"]
 
-
-# ---------------------------------------------------------------
-# DATA LOADING
-# ---------------------------------------------------------------
-@st.cache_data(ttl=300)
-def load_csv_for_date(date_str: str):
-    url = f"https://api.transnetbw.de/picasso-cbmp/csv?date={date_str}&lang=de"
-    response = requests.get(url, verify=False)
-    if response.status_code != 200:
-        st.error(f"API error {response.status_code}")
-        return None
-    df = pd.read_csv(io.StringIO(response.content.decode()), sep=";", parse_dates=["Zeit (ISO 8601)"])
-    df["Zeit (ISO 8601)"] = pd.to_datetime(df["Zeit (ISO 8601)"], utc=True).dt.tz_convert(LOCAL_TZ)
-    return df
-
-df_raw = load_csv_for_date(date_str)
-
-if df_raw is None or df_raw.empty:
-    st.warning("No data available for the selected date.")
-    st.stop()
-
-df_raw = df_raw.reset_index(drop=True)
-times_all = df_raw["Zeit (ISO 8601)"]
-
-# ---------------------------------------------------------------
-# PREPARE TSO DATA (computed once, for the full day)
-# ---------------------------------------------------------------
-# For each TSO we keep two parallel arrays (aligned with df_raw / times_all):
-#   tso_values_all[tso]   -> the merged CBMP price (as before)
-#   tso_category_all[tso] -> the direction of that price point:
-#                             "up"      -> only the POS (up) price exists     -> aFRR up bid only
-#                             "down"    -> only the NEG (down) price exists   -> aFRR down bid only
-#                             "neutral" -> both POS and NEG prices exist      -> no net aFRR demand
-#                             None      -> neither price exists (no data)
-tso_values_all = {}
-tso_category_all = {}
-for tso in TSO_DISPLAY_NAMES.keys():
-    neg_col = f"{tso}_NEG"   # down price
-    pos_col = f"{tso}_POS"   # up price
-    if neg_col in df_raw.columns or pos_col in df_raw.columns:
-        vals = []
-        cats = []
-        for neg, pos in zip(df_raw.get(neg_col, [np.nan]*len(df_raw)), df_raw.get(pos_col, [np.nan]*len(df_raw))):
-            neg_val = np.nan if pd.isna(neg) or neg == "N/A" else float(neg)
-            pos_val = np.nan if pd.isna(pos) or pos == "N/A" else float(pos)
-            neg_present = not np.isnan(neg_val)
-            pos_present = not np.isnan(pos_val)
-            if not neg_present and not pos_present:
-                vals.append(np.nan)
-                cats.append(None)
-            elif neg_present and not pos_present:
-                vals.append(neg_val)
-                cats.append("down")
-            elif pos_present and not neg_present:
-                vals.append(pos_val)
-                cats.append("up")
-            else:
-                vals.append((neg_val + pos_val) / 2)
-                cats.append("neutral")
-        tso_values_all[tso] = np.array(vals)
-        tso_category_all[tso] = np.array(cats, dtype=object)
-
-available_tsos = [tso for tso in TSO_DISPLAY_NAMES.keys() if tso in tso_values_all]
-
-if not available_tsos:
-    st.warning("No TSO price columns found for the selected date.")
-    st.stop()
-
-_ALL_LOCAL_TIMES = times_all.dt.time
-DAY_MIN_TIME, DAY_MAX_TIME = min(_ALL_LOCAL_TIMES), max(_ALL_LOCAL_TIMES)
-
-# ---------------------------------------------------------------
-# SHARED HELPERS
-# ---------------------------------------------------------------
-# All section keys that carry an "Hour Range" slider - used by the
-# "Apply to all sections" button so any one slider can push its range
-# to every other section's slider.
-ALL_TIME_RANGE_KEYS = ["sec1_time", "sec2_time", "sec3_time", "sec4_time"]
-
-
-def time_range_widget(key):
-    """Independent 'Select Hour Range' slider for one section, with a
-    button (placed right next to it) that copies THIS slider's current
-    range onto every other section's Hour Range slider.
-    """
-    col_slider, col_btn = st.columns([5, 2])
-    with col_slider:
-        result = st.slider(
-            "Select Hour Range",
-            min_value=DAY_MIN_TIME,
-            max_value=DAY_MAX_TIME,
-            value=(DAY_MIN_TIME, DAY_MAX_TIME),
-            format="HH:mm",
-            key=key,
-        )
-    with col_btn:
-        st.markdown("<div style='margin-top:1.7em'></div>", unsafe_allow_html=True)
-        apply_all_clicked = st.button(
-            "⏱️ Apply to all sections",
-            key=f"{key}_apply_all_btn",
-            help="Set this Hour Range on every section's chart controls.",
-        )
-    if apply_all_clicked:
-        for other_key in ALL_TIME_RANGE_KEYS:
-            if other_key != key:
-                st.session_state[other_key] = result
-        st.rerun()
-    return result
-
-
-def time_mask(start_t, end_t):
-    return ((times_all.dt.time >= start_t) & (times_all.dt.time <= end_t)).to_numpy()
-
-
-def tso_widget(key, default_n=6):
-    return st.multiselect(
-        "Choose TSOs",
-        options=available_tsos,
-        format_func=lambda x: TSO_DISPLAY_NAMES[x],
-        default=available_tsos[:default_n],
-        key=key,
-    )
-
-
-_YAXIS_STEP = 0.5
-
-
-def _round_down_to_step(x, step=_YAXIS_STEP):
-    return float(np.floor(x / step) * step)
-
-
-def _round_up_to_step(x, step=_YAXIS_STEP):
-    return float(np.ceil(x / step) * step)
-
-
-def yaxis_widget(key, selected, start_t, end_t, mask, values_source=None):
-    """Y-axis range slider based on the valid values of `selected` TSOs
-    within `mask`. Returns (ymin, ymax) or (None, None) if no data.
-
-    Includes a "Fit to data" button, placed right next to the slider, that
-    snaps THIS slider only (never another section's) tightly around the
-    actual min/max of the data currently shown here. If the TSO selection
-    or time range for this section changes, any previous manual range is
-    dropped automatically so the slider falls back to a fresh, sensible
-    default instead of clamping a now-irrelevant custom range.
-    """
-    source = values_source if values_source is not None else tso_values_all
-    if not selected:
-        return None, None
-    arrs = [source[t][mask] for t in selected if t in source]
-    if not arrs:
-        return None, None
-    all_vals = np.concatenate(arrs)
-    valid_vals = all_vals[~np.isnan(all_vals)]
-    if valid_vals.size == 0:
-        return None, None
-
-    data_min = float(valid_vals.min())
-    data_max = float(valid_vals.max())
-
-    # Wide bounds for the slider itself, so the user can still zoom out.
-    dmin = _round_down_to_step(data_min - 20)
-    dmax = _round_up_to_step(data_max + 20)
-
-    # Tight "fit to data" target: actual min/max plus a small visual margin,
-    # rounded to the slider's own step so the handles land cleanly on the
-    # slider's grid instead of an off-step value.
-    margin = max((data_max - data_min) * 0.05, _YAXIS_STEP)
-    fit_min = max(_round_down_to_step(data_min - margin), dmin)
-    fit_max = min(_round_up_to_step(data_max + margin), dmax)
-    if fit_max <= fit_min:
-        fit_min, fit_max = dmin, dmax
-
-    # This widget's own identity: which TSOs + which time range it is
-    # currently showing. If that changes (in THIS section only — other
-    # sections have their own key/signature), any previously stored value
-    # for THIS slider is no longer meaningful, so drop it rather than
-    # clamp it into the new bounds.
-    signature = (tuple(sorted(selected)), start_t, end_t)
-    sig_key = f"{key}__sig"
-    if st.session_state.get(sig_key) != signature:
-        st.session_state.pop(key, None)
-        st.session_state[sig_key] = signature
-
-    col_slider, col_btn = st.columns([5, 2])
-    with col_btn:
-        st.markdown("<div style='margin-top:1.7em'></div>", unsafe_allow_html=True)
-        fit_clicked = st.button(
-            "🔍 Fit to data",
-            key=f"{key}_fit_btn",
-            help="Fit the Y-axis of THIS chart only to its currently displayed data — other sections are not affected.",
-        )
-    if fit_clicked:
-        st.session_state[key] = (fit_min, fit_max)
-
-    slider_kwargs = dict(min_value=dmin, max_value=dmax, step=_YAXIS_STEP, key=key)
-    if key not in st.session_state:
-        slider_kwargs["value"] = (dmin, dmax)
-
-    with col_slider:
-        result = st.slider("Select Y-axis range (€/MWh)", **slider_kwargs)
-    return result
-
-
-def plot_direction_staircase(ax_i, times_series, values, categories,
-                              color_map=DIRECTION_COLORS, linewidth=1.5):
-    """
-    Draw a staircase (steps-post) line on ax_i where every horizontal and
-    vertical segment is colored according to the aFRR direction of the
-    price it belongs to:
-        red   -> up only
-        green -> down only
-        blue  -> neutral (both directions)
-    Segments touching a missing value (no data) are simply not drawn,
-    leaving a gap.
-    """
-    # Invisible plot first: this makes matplotlib treat the x-axis as a
-    # proper date axis and sets sensible autoscale limits, without
-    # actually drawing a (single-colored) line.
-    ax_i.plot(times_series, values, alpha=0)
-
-    x = mdates.date2num(np.array(times_series.dt.to_pydatetime()))
-    y = np.asarray(values, dtype=float)
-    cats = list(categories)
-    n = len(x)
-
-    segments = []
-    seg_colors = []
-    for i in range(n - 1):
-        if np.isnan(y[i]) or np.isnan(y[i + 1]) or cats[i] is None or cats[i + 1] is None:
-            continue
-        # Horizontal step: value y[i] is held from x[i] to x[i+1]
-        segments.append([(x[i], y[i]), (x[i + 1], y[i])])
-        seg_colors.append(color_map.get(cats[i], "gray"))
-        # Vertical riser: jump from y[i] to y[i+1] happening at x[i+1]
-        segments.append([(x[i + 1], y[i]), (x[i + 1], y[i + 1])])
-        seg_colors.append(color_map.get(cats[i + 1], "gray"))
-
-    if segments:
-        lc = LineCollection(segments, colors=seg_colors, linewidths=linewidth)
-        ax_i.add_collection(lc)
-
-
-DIRECTION_LEGEND_ELEMENTS = [
-    Line2D([0], [0], color="red", lw=2, label="Up only (aFRR up bid)"),
-    Line2D([0], [0], color="green", lw=2, label="Down only (aFRR down bid)"),
-    Line2D([0], [0], color="blue", lw=2, label="Neutral (both directions)"),
+PALETTE = [
+    "#0b6a6a", "#3b6fd1", "#e08214", "#8e44ad", "#c0392b", "#16a085",
+    "#d4ac0d", "#7f8c8d", "#e84393", "#2c3e50", "#27ae60", "#a0522d",
+    "#5dade2", "#f39c12", "#6c3483", "#1abc9c", "#b03a2e", "#566573",
+    "#ff7f50", "#2e86c1", "#76448a", "#229954", "#ca6f1e", "#34495e",
 ]
+FIXED_COLORS = {"ELIA": "#0b6a6a", "RTE": "#3b6fd1", "50HZT": "#e08214"}
+
+CAT_UP, CAT_DOWN, CAT_NEUTRAL = 1, 2, 3
+DIR = {
+    CAT_UP:      dict(key="up", label="Up", color="#d6443a", desc="Up only (aFRR up)"),
+    CAT_DOWN:    dict(key="down", label="Down", color="#2e9e5b", desc="Down only (aFRR down)"),
+    CAT_NEUTRAL: dict(key="neutral", label="Neutral", color="#3b6fd1", desc="Neutral (both prices)"),
+}
+
+PLOT_CONFIG = {
+    "displaylogo": False,
+    "scrollZoom": True,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+    "toImageButtonOptions": {"format": "png", "scale": 2},
+}
 
 
-def qh_direction_averages(values, categories, qh_bucket_series, qh_idx):
+def tso_label(code):
+    cc, name, _ = TSO_INFO.get(code, ("??", code, "unknown"))
+    return f"{cc} · {name}" if code in TSO_INFO else f"{code} (new/unknown)"
+
+
+def tso_sort_key(code):
+    order = list(TSO_INFO)
+    return (order.index(code) if code in order else 999, code)
+
+
+# =================================================================
+# STYLE
+# =================================================================
+st.markdown(
+    f"""
+<style>
+    .block-container {{padding-top: 2rem; padding-bottom: 3rem;}}
+    .hero {{
+        background: linear-gradient(120deg, {BRAND} 0%, #13908f 100%);
+        color: #fff; padding: 1.4rem 1.8rem; border-radius: 14px; margin-bottom: 1.2rem;
+    }}
+    .hero h1 {{color:#fff; font-size: 1.9rem; margin: 0 0 .3rem 0; padding:0;}}
+    .hero p {{color:#e6f4f4; margin: 0; font-size: 1rem;}}
+    .hero a {{color:#fff; font-weight:600;}}
+    .pill {{display:inline-block; padding:2px 10px; border-radius:999px; font-size:.8rem;
+            font-weight:600; color:#fff; margin-right:6px;}}
+    h2 {{border-bottom: 2px solid {BRAND}22; padding-bottom: .3rem;}}
+    div[data-testid="stMetricValue"] {{font-size: 1.35rem;}}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# =================================================================
+# DATA LOADING (vectorised + cached)
+# =================================================================
+_SESSION = requests.Session()
+
+
+@st.cache_data(show_spinner=False, max_entries=40)
+def load_day(date_str: str, cache_bucket: int):
+    """Download one day of CBMP and pre-compute price + direction per TSO.
+
+    `cache_bucket` only serves to refresh today's data every 5 minutes;
+    past days are cached for the lifetime of the app.
     """
-    Returns a dict with one pandas Series per direction ("up", "down",
-    "neutral"), indexed by qh_idx, containing the average price of that
-    direction for each quarter-hour (NaN where that direction did not
-    occur in that quarter-hour).
+    url = API_URL.format(d=date_str)
+    try:
+        r = _SESSION.get(url, timeout=90)
+    except requests.exceptions.SSLError:
+        r = _SESSION.get(url, timeout=90, verify=False)
+    if r.status_code != 200:
+        return {"error": f"API error {r.status_code}"}
+    if not r.content.strip():
+        return {"error": "Empty response"}
+
+    df = pd.read_csv(io.BytesIO(r.content), sep=";", na_values=["N/A"], low_memory=False)
+    tcol = df.columns[0]
+    t_local = (
+        pd.to_datetime(df[tcol], utc=True, format="ISO8601")
+        .dt.tz_convert(LOCAL_TZ)
+        .dt.tz_localize(None)
+        .to_numpy()
+    )
+    n = len(df)
+
+    codes = []
+    for c in df.columns[1:]:
+        if c.endswith("_POS") or c.endswith("_NEG"):
+            code = c[:-4]
+            if code not in codes:
+                codes.append(code)
+
+    nan_col = np.full(n, np.nan)
+    values, cats, pos_d, neg_d, empty = {}, {}, {}, {}, []
+    for code in codes:
+        pos = pd.to_numeric(df[f"{code}_POS"], errors="coerce").to_numpy(float) if f"{code}_POS" in df else nan_col
+        neg = pd.to_numeric(df[f"{code}_NEG"], errors="coerce").to_numpy(float) if f"{code}_NEG" in df else nan_col
+        hp, hn = ~np.isnan(pos), ~np.isnan(neg)
+        if not (hp | hn).any():
+            empty.append(code)
+            continue
+        cat = np.zeros(n, dtype=np.int8)
+        cat[hp & ~hn] = CAT_UP
+        cat[hn & ~hp] = CAT_DOWN
+        cat[hp & hn] = CAT_NEUTRAL
+        val = np.where(hp & hn, (pos + neg) / 2.0, np.where(hp, pos, neg))
+        values[code], cats[code] = val, cat
+        pos_d[code], neg_d[code] = pos, neg
+
+    return {"times": t_local, "values": values, "cats": cats,
+            "pos": pos_d, "neg": neg_d, "empty": empty, "n": n}
+
+
+# =================================================================
+# HELPERS
+# =================================================================
+def seconds_of_day(times):
+    return ((times - times.astype("datetime64[D]")) / np.timedelta64(1, "s")).astype(np.int64)
+
+
+def compress_steps(x, y, c=None, close=True):
+    """Keep only the points where the price (or direction) changes.
+
+    CBMPs are often flat for many 4-second cycles, so this removes most points
+    while drawing exactly the same staircase (line_shape='hv').
+    Returns the start index of each run; with close=True the last index is
+    appended so the final step extends to the end of the window.
     """
-    s = pd.DataFrame({
-        "qh": qh_bucket_series,
-        "value": np.asarray(values, dtype=float),
-        "cat": np.asarray(categories, dtype=object),
-    })
+    n = len(y)
+    if n == 0:
+        return np.array([], dtype=int)
+    both_nan = np.isnan(y[1:]) & np.isnan(y[:-1])
+    change = (y[1:] != y[:-1]) & ~both_nan
+    if c is not None:
+        change |= c[1:] != c[:-1]
+    idx = np.flatnonzero(np.concatenate(([True], change)))
+    if close and idx[-1] != n - 1:
+        idx = np.append(idx, n - 1)
+    return idx
+
+
+def direction_segments(x, y, c):
+    """Build one NaN-separated polyline per direction so that every
+    horizontal step (and the riser into it) is coloured by its direction."""
+    starts = compress_steps(x, y, c, close=False)
+    if len(starts) == 0:
+        return {}
+    run_end_x = np.append(x[starts[1:]], x[-1])
+    xs, ys, cs = x[starts], y[starts], c[starts]
+    fin = ~np.isnan(ys)
     out = {}
-    for direction in ("up", "down", "neutral"):
-        sub = s[s["cat"] == direction]
-        avg = sub.groupby("qh")["value"].mean()
-        out[direction] = avg.reindex(qh_idx)
+    for d in (CAT_UP, CAT_DOWN, CAT_NEUTRAL):
+        m = (cs == d) & fin
+        hx = np.column_stack([xs[m], run_end_x[m], run_end_x[m]]).ravel()
+        hy = np.column_stack([ys[m], ys[m], np.full(m.sum(), np.nan)]).ravel()
+        k = np.flatnonzero((cs[1:] == d) & fin[1:] & fin[:-1]) + 1
+        rx = np.column_stack([xs[k], xs[k], xs[k]]).ravel()
+        ry = np.column_stack([ys[k - 1], ys[k], np.full(len(k), np.nan)]).ravel()
+        out[d] = (np.concatenate([hx, rx]), np.concatenate([hy, ry]))
     return out
 
 
-def qh_direction_combo_counts(has_up, has_down, has_neutral):
+def y_range_control(key, arrays, default="Fit to data"):
+    """Y-axis control that always fits the data actually PLOTTED in the chart.
+
+    - Fit to data: min/max of the plotted values (+5 % margin)
+    - Ignore spikes: P1–P99 of the plotted values (useful with 4-s spikes)
+    - Manual: free min/max
+    Returns [ymin, ymax] or None (let Plotly autoscale).
     """
-    Counts quarter-hours into 4 mutually-exclusive buckets based on which
-    directions had at least one price point in it:
-      - "Both Up & Down"           -> an Up average AND a Down average exist
-                                       (neutral may or may not also be present)
-      - "Only Up (± Neutral)"      -> an Up average exists, no Down average
-                                       (neutral may or may not also be present)
-      - "Only Down (± Neutral)"    -> a Down average exists, no Up average
-                                       (neutral may or may not also be present)
-      - "Only Neutral"             -> only a Neutral average exists
-    Quarter-hours with no data at all in any direction are not counted in
-    any of the 4 buckets (their sum can be less than the total QH count).
-    """
-    has_up = np.asarray(has_up, dtype=bool)
-    has_down = np.asarray(has_down, dtype=bool)
-    has_neutral = np.asarray(has_neutral, dtype=bool)
-
-    both = int(np.sum(has_up & has_down))
-    only_up = int(np.sum(has_up & ~has_down))
-    only_down = int(np.sum(has_down & ~has_up))
-    only_neutral = int(np.sum(has_neutral & ~has_up & ~has_down))
-
-    return {
-        "Both Up & Down": both,
-        "Only Up (± Neutral)": only_up,
-        "Only Down (± Neutral)": only_down,
-        "Only Neutral": only_neutral,
-    }
-
-
-QH_CATEGORY_ORDER = ["Both Up & Down", "Only Up (± Neutral)", "Only Down (± Neutral)", "Only Neutral"]
-
-
-# =================================================================
-# SECTION 1 — ALL TSOs COMBINED CHART
-# =================================================================
-st.header("All TSOs — Combined Chart")
-
-with st.expander("⚙️ Chart controls", expanded=True):
-    start1, end1 = time_range_widget("sec1_time")
-    tsos1 = tso_widget("sec1_tso")
-    mask1 = time_mask(start1, end1)
-    ymin1, ymax1 = yaxis_widget("sec1_yaxis", tsos1, start1, end1, mask1)
-
-if not tsos1:
-    st.warning("Please select at least one TSO to display the combined chart.")
-elif ymin1 is None:
-    st.warning("No valid numerical data for the selected TSOs / time range.")
-else:
-    times1 = times_all[mask1]
-    fig, ax = plt.subplots(figsize=(18, 7))
-    for tso in tsos1:
-        ax.plot(times1, tso_values_all[tso][mask1], label=TSO_DISPLAY_NAMES[tso], color=TSO_COLORS[tso])
-    ax.set_title(f"{date_str} Picasso CBMP (Local: {start1.strftime('%H:%M')} – {end1.strftime('%H:%M')})")
-    ax.set_xlabel("Time (Europe/Brussels)")
-    ax.set_ylabel("€/MWh")
-    ax.set_ylim(ymin1, ymax1)
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
-    ax.grid(True)
-    ax.legend(ncols=2)
-    plt.tight_layout()
-    st.pyplot(fig)
-
-# =================================================================
-# SECTION 2 — INDIVIDUAL TSO GRAPHS (colored by aFRR direction)
-# =================================================================
-st.header("Individual TSO Graphs")
-
-with st.expander("⚙️ Chart controls", expanded=True):
-    start2, end2 = time_range_widget("sec2_time")
-    tsos2 = tso_widget("sec2_tso")
-    mask2 = time_mask(start2, end2)
-    ymin2, ymax2 = yaxis_widget("sec2_yaxis", tsos2, start2, end2, mask2)
-
-st.caption("Red = aFRR up bid only · Green = aFRR down bid only · Blue = neutral (both directions present)")
-
-if not tsos2:
-    st.warning("Please select at least one TSO to display the individual graphs.")
-elif ymin2 is None:
-    st.warning("No valid numerical data for the selected TSOs / time range.")
-else:
-    times2 = times_all[mask2]
-
-    # One TSO per graph, each graph on its own line (rendered one by one,
-    # stacked vertically), instead of a combined multi-column grid.
-    for tso in tsos2:
-        fig2, ax_i = plt.subplots(figsize=(18, 4))
-        plot_direction_staircase(ax_i, times2, tso_values_all[tso][mask2], tso_category_all[tso][mask2])
-        ax_i.set_title(TSO_DISPLAY_NAMES[tso])
-        ax_i.set_ylim(ymin2, ymax2)
-        ax_i.grid(True)
-        ax_i.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax_i.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=LOCAL_TZ))
-        ax_i.legend(handles=DIRECTION_LEGEND_ELEMENTS, loc="upper right", fontsize=8)
-        plt.tight_layout()
-        st.pyplot(fig2)
-
-# =================================================================
-# SECTION 3 — QUARTER-HOUR AVERAGE PRICES BY DIRECTION (interactive)
-# =================================================================
-st.header("Quarter-Hour Average Prices by Direction")
-
-with st.expander("⚙️ Chart controls", expanded=True):
-    start3, end3 = time_range_widget("sec3_time")
-    tsos3 = tso_widget("sec3_tso")
-    mask3 = time_mask(start3, end3)
-    ymin3, ymax3 = yaxis_widget("sec3_yaxis", tsos3, start3, end3, mask3)
-    directions3 = st.multiselect(
-        "Directions to show",
-        options=["up", "down", "neutral"],
-        default=["up", "down", "neutral"],
-        format_func=lambda d: DIRECTION_LABELS[d],
-        key="sec3_directions",
-    )
-
-st.caption(
-    "For every 15-minute block, the average price is computed separately for the up, down and "
-    "neutral directions (Red = Up, Green = Down, Blue = Neutral). If a direction has no data in a "
-    "given quarter-hour, that point is left blank. Hover, zoom and click a legend entry to "
-    "show/hide a series."
-)
-
-qh_avgs_by_tso = {}
-qh_index3 = None
-
-if not tsos3:
-    st.warning("Please select at least one TSO to display the quarter-hour chart.")
-elif not directions3:
-    st.warning("Please select at least one direction (Up / Down / Neutral) to display.")
-elif ymin3 is None:
-    st.warning("No valid numerical data for the selected TSOs / time range.")
-else:
-    times3 = times_all[mask3]
-    qh_bucket3 = times3.dt.floor("15min").reset_index(drop=True)
-    qh_index3 = pd.DatetimeIndex(sorted(qh_bucket3.unique()))
-    # Plotly does not need a tz-aware index to render local wall-clock time correctly here,
-    # since qh_index3 already carries Europe/Brussels local time; strip tz to avoid Plotly
-    # re-interpreting/re-converting the axis.
-    qh_index3_naive = qh_index3.tz_localize(None)
-
-    n3 = len(tsos3)
-    rows3 = int(np.ceil(n3 / 2))
-    fig3 = make_subplots(
-        rows=rows3, cols=2,
-        subplot_titles=[TSO_DISPLAY_NAMES[t] for t in tsos3],
-        shared_xaxes=True, shared_yaxes=True,
-        vertical_spacing=0.12 / max(rows3, 1),
-    )
-
-    legend_shown = {"up": False, "down": False, "neutral": False}
-    for i, tso in enumerate(tsos3):
-        r = i // 2 + 1
-        c = i % 2 + 1
-        qh_avgs = qh_direction_averages(
-            tso_values_all[tso][mask3], tso_category_all[tso][mask3], qh_bucket3, qh_index3
+    arrs = [np.asarray(a, dtype=float).ravel() for a in arrays if a is not None and len(a)]
+    vals = np.concatenate(arrs) if arrs else np.array([])
+    vals = vals[np.isfinite(vals)]
+    options = ["Fit to data", "Ignore spikes (P1–P99)", "Manual"]
+    c1, c2, c3 = st.columns([3, 1.2, 1.2])
+    with c1:
+        mode = st.radio(
+            "Y-axis", options, index=options.index(default), horizontal=True, key=f"{key}_mode",
+            help="Fit to data uses the values shown in THIS chart (e.g. the quarter-hour averages, "
+                 "not the raw 4-second prices). Tip: drag on the chart to zoom, double-click to reset.",
         )
-        qh_avgs_by_tso[tso] = qh_avgs
-        for direction in ("up", "down", "neutral"):
-            if direction not in directions3:
-                continue
-            fig3.add_trace(
-                go.Scatter(
-                    x=qh_index3_naive,
-                    y=qh_avgs[direction].values,
-                    mode="lines+markers",
-                    name=DIRECTION_LABELS[direction],
-                    legendgroup=direction,
-                    showlegend=not legend_shown[direction],
-                    line=dict(color=DIRECTION_COLORS[direction], width=1.5),
-                    marker=dict(size=4),
-                    connectgaps=False,
-                    hovertemplate="%{x|%H:%M} · " + DIRECTION_LABELS[direction] + ": %{y:.2f} €/MWh<extra></extra>",
-                ),
-                row=r, col=c,
-            )
-            legend_shown[direction] = True
+    if vals.size == 0:
+        return None
+    lo, hi = float(vals.min()), float(vals.max())
+    if mode.startswith("Ignore"):
+        lo, hi = (float(v) for v in np.percentile(vals, [1, 99]))
+    elif mode == "Manual":
+        with c2:
+            lo = st.number_input("Min €/MWh", value=float(np.floor(lo)), step=10.0, key=f"{key}_min")
+        with c3:
+            hi = st.number_input("Max €/MWh", value=float(np.ceil(hi)), step=10.0, key=f"{key}_max")
+        if hi <= lo:
+            st.warning("Max must be above Min.")
+            return None
+        return [lo, hi]
+    pad = max((hi - lo) * 0.05, 1.0)
+    return [lo - pad, hi + pad]
 
-    fig3.update_yaxes(range=[ymin3, ymax3])
-    fig3.update_xaxes(tickformat="%H:%M")
-    fig3.update_layout(
-        height=350 * rows3,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        margin=dict(t=80),
+
+def base_layout(fig, height, title=None):
+    fig.update_layout(
+        height=height,
+        title=dict(text=title, x=0, xanchor="left", font=dict(size=15)) if title else None,
+        margin=dict(l=10, r=10, t=60 if title else 40, b=10),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        dragmode="zoom",
     )
-    st.plotly_chart(fig3, width="stretch")
+    fig.update_xaxes(tickformat="%H:%M", showgrid=True, gridcolor="rgba(128,128,128,0.15)")
+    fig.update_yaxes(title_text="€/MWh", showgrid=True, gridcolor="rgba(128,128,128,0.15)",
+                     zeroline=True, zerolinecolor="rgba(128,128,128,0.4)")
+    return fig
 
-# -----------------------------------------------------------------
-# SECTION 3b — QH DIRECTION STATISTICS
-# -----------------------------------------------------------------
-if tsos3 and directions3 and qh_index3 is not None and len(qh_index3) > 0:
-    st.subheader("Quarter-Hour Direction Statistics")
 
-    diff_rows = []
-    count_rows = []
-    for tso in tsos3:
-        qh_avgs = qh_avgs_by_tso[tso]
-        has_up = qh_avgs["up"].notna()
-        has_down = qh_avgs["down"].notna()
-        has_neutral = qh_avgs["neutral"].notna()
+def qh_averages(times, val, cat):
+    """Quarter-hour average per direction (+ overall) and share of time per direction."""
+    qh = pd.DatetimeIndex(times).floor("15min")
+    df = pd.DataFrame({"qh": qh, "v": val, "c": cat})
+    df = df[df["c"] > 0]
+    by_dir = df.groupby(["qh", "c"])["v"].mean().unstack("c")
+    overall = df.groupby("qh")["v"].mean()
+    idx = pd.DatetimeIndex(np.unique(qh))
+    by_dir = by_dir.reindex(idx)
+    res = pd.DataFrame(index=idx)
+    for d in (CAT_UP, CAT_DOWN, CAT_NEUTRAL):
+        res[DIR[d]["key"]] = by_dir[d] if d in by_dir.columns else np.nan
+    res["overall"] = overall.reindex(idx)
+    return res
 
-        # --- Up minus Down stats, only for QH where BOTH exist ---
-        diff = (qh_avgs["up"] - qh_avgs["down"]).dropna()
-        if len(diff) > 0:
-            diff_rows.append({
-                "TSO": TSO_DISPLAY_NAMES[tso],
-                "N (QH with Up & Down)": int(len(diff)),
-                "Mean (€/MWh)": diff.mean(),
-                "Median (€/MWh)": diff.median(),
-                "Std (€/MWh)": diff.std(),
-                "P10": diff.quantile(0.10),
-                "P25": diff.quantile(0.25),
-                "P75": diff.quantile(0.75),
-                "P90": diff.quantile(0.90),
-            })
-        else:
-            diff_rows.append({
-                "TSO": TSO_DISPLAY_NAMES[tso],
-                "N (QH with Up & Down)": 0,
-                "Mean (€/MWh)": np.nan,
-                "Median (€/MWh)": np.nan,
-                "Std (€/MWh)": np.nan,
-                "P10": np.nan,
-                "P25": np.nan,
-                "P75": np.nan,
-                "P90": np.nan,
-            })
 
-        # --- Count of QH per direction combination ---
-        combo_counts = qh_direction_combo_counts(has_up.values, has_down.values, has_neutral.values)
-        row = {"TSO": TSO_DISPLAY_NAMES[tso]}
-        for cat in QH_CATEGORY_ORDER:
-            row[cat] = combo_counts[cat]
-        row["Total QH"] = int(len(qh_index3))
-        count_rows.append(row)
+# =================================================================
+# SIDEBAR — GLOBAL SETTINGS
+# =================================================================
+today_local = datetime.now(LOCAL_TZ).date()
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
+    date_selected = st.date_input(
+        "Date (Europe/Brussels)", value=today_local,
+        min_value=date(2022, 1, 1), max_value=today_local,
+    )
+date_str = date_selected.strftime("%Y-%m-%d")
+bucket = int(time.time() // 300) if date_selected == today_local else 0
 
-    diff_df = pd.DataFrame(diff_rows).set_index("TSO")
-    st.markdown("**Up − Down spread** (computed only for quarter-hours where both an Up and a Down average exist)")
-    st.dataframe(diff_df.style.format("{:.2f}", na_rep="—"), width="stretch")
+with st.spinner(f"Loading PICASSO data for {date_str}…"):
+    data = load_day(date_str, bucket)
 
-    count_df = pd.DataFrame(count_rows).set_index("TSO")
+if "error" in data:
+    st.error(f"Could not load data for {date_str}: {data['error']}")
+    st.stop()
+if data["n"] == 0 or not data["values"]:
+    st.warning("No data available for the selected date.")
+    st.stop()
+
+TIMES = data["times"]
+VALUES, CATS = data["values"], data["cats"]
+SOD = seconds_of_day(TIMES)
+available = sorted(VALUES, key=tso_sort_key)
+
+# TSO selection (persisted across dates, sanitised to what exists that day)
+if "tsos" not in st.session_state:
+    st.session_state["tsos"] = [t for t in DEFAULT_TSOS if t in available]
+else:
+    st.session_state["tsos"] = [t for t in st.session_state["tsos"] if t in available]
+
+
+def _set_tsos(lst):
+    st.session_state["tsos"] = [t for t in lst if t in available]
+
+
+with st.sidebar:
+    t_min = dtime(0, 0)
+    t_max = dtime(23, 59, 59)
+    start_t, end_t = st.slider(
+        "Hour range", min_value=t_min, max_value=t_max, value=(t_min, t_max),
+        format="HH:mm", key="hour_range",
+        help="Applies to all charts and statistics. Inside each chart you can also drag to zoom.",
+    )
+    st.multiselect("TSOs", options=available, format_func=tso_label, key="tsos",
+                   help="The four German TSOs (50Hertz, Amprion, TransnetBW, TenneT DE) form one "
+                        "LFC block and therefore share the same CBMP.")
+    b1, b2, b3 = st.columns(3)
+    b1.button("BE·FR·DE", on_click=_set_tsos, args=(DEFAULT_TSOS,), width="stretch")
+    b2.button("CWE+", on_click=_set_tsos,
+              args=(["ELIA", "RTE", "50HZT", "TNL", "APG", "SG"],), width="stretch")
+    b3.button("All", on_click=_set_tsos, args=(available,), width="stretch")
+
+    if data["empty"]:
+        st.caption("In the feed but without prices on this day: "
+                   + ", ".join(tso_label(c) for c in data["empty"]))
+    st.divider()
     st.markdown(
-        "**Number of quarter-hours by direction combination** "
-        "(\"± Neutral\" means neutral prices may or may not also be present in that quarter-hour; "
-        "the 4 columns can sum to less than Total QH if some quarter-hours have no data at all)"
+        f"**Read more on Gem Energy Analytics**\n\n"
+        f"- {post_link('picasso')}\n- {post_link('overlap')}\n- {post_link('overlap2')}\n"
+        f"- {post_link('imbalance')}\n- {post_link('intro')}"
     )
-    st.dataframe(count_df, width="stretch")
+    st.markdown(
+        "[Subscribe](https://gemenergyanalytics.substack.com/) · "
+        "[LinkedIn](https://www.linkedin.com/in/julien-jomaux/) · "
+        "[Email](mailto:julien.jomaux@gmail.com)"
+    )
+
+SELECTED = list(st.session_state["tsos"])
+MASK = (SOD >= start_t.hour * 3600 + start_t.minute * 60 + start_t.second) & (
+    SOD <= end_t.hour * 3600 + end_t.minute * 60 + end_t.second)
+T = TIMES[MASK]
+
+
+def color_of(code):
+    if code in FIXED_COLORS:
+        return FIXED_COLORS[code]
+    return PALETTE[(tso_sort_key(code)[0] + 3) % len(PALETTE)]
+
 
 # =================================================================
-# SECTION 4 — TSO SIMILARITY MATRIX
+# HEADER
 # =================================================================
-st.header("TSO Similarity Matrix (%)")
-
-with st.expander("⚙️ Chart controls", expanded=True):
-    start4, end4 = time_range_widget("sec4_time")
-    tsos4 = tso_widget("sec4_tso")
-    mask4 = time_mask(start4, end4)
-
-st.caption(
-    "The % of matching timestamps is computed across all valid price points in the selected "
-    "time range (the Y-axis range is not adjustable for this chart)."
+st.markdown(
+    f"""
+<div class="hero">
+  <h1>⚡ PICASSO aFRR prices · {date_selected.strftime('%A %d %B %Y')}</h1>
+  <p>Cross-Border Marginal Prices (CBMP) of the European aFRR platform, every 4 seconds.
+  Data: <a href="https://www.transnetbw.de/en/energy-market/ancillary-services/picasso" target="_blank">TransnetBW</a>
+  · Analysis: <a href="https://gemenergyanalytics.substack.com/" target="_blank">Gem Energy Analytics</a>
+  by <a href="https://www.linkedin.com/in/julien-jomaux/" target="_blank">Julien Jomaux</a></p>
+</div>
+""",
+    unsafe_allow_html=True,
 )
 
+with st.expander("📖 What am I looking at? PICASSO and CBMP in 1 minute", expanded=False):
+    st.markdown(
+        f"""
+**PICASSO** is the European platform for the exchange of **aFRR balancing energy** (automatic
+Frequency Restoration Reserve). Every **4 seconds**, it collects the aFRR needs of all connected
+TSOs, nets opposite needs across borders, and activates the cheapest bids from a common merit
+order, as long as cross-border capacity allows.
 
-def percentage_equal(arr1: np.ndarray, arr2: np.ndarray) -> float:
-    mask = ~np.isnan(arr1) & ~np.isnan(arr2)
-    if mask.sum() == 0:
-        return np.nan
-    return 100.0 * np.sum(arr1[mask] == arr2[mask]) / mask.sum()
+The resulting price is the **CBMP (Cross-Border Marginal Price)**: one price per TSO and per
+4-second optimisation cycle (225 per quarter-hour). When there is no congestion, neighbouring
+TSOs share the same price; when capacity is saturated, prices split.
+
+The feed gives two prices per TSO:
+- **POS** (up): price of upward aFRR activation → shown as <span class="pill" style="background:{DIR[CAT_UP]['color']}">Up</span>
+- **NEG** (down): price of downward aFRR activation → shown as <span class="pill" style="background:{DIR[CAT_DOWN]['color']}">Down</span>
+- If both exist in the same cycle, the app shows their average as <span class="pill" style="background:{DIR[CAT_NEUTRAL]['color']}">Neutral</span>
+
+Prices are paid **pay-as-clear**: all activated bids receive the CBMP. These prices feed directly
+into imbalance prices in many countries (e.g. Belgium).
+
+**Go deeper:** {post_link('picasso')} · {post_link('reserves')} · {post_link('imbalance')} · {post_link('intro')}
+""",
+        unsafe_allow_html=True,
+    )
+
+if not SELECTED:
+    st.info("👈 Select at least one TSO in the sidebar.")
+    st.stop()
+
+missing = [t for t in SELECTED if not np.isfinite(VALUES[t][MASK]).any()]
+if missing:
+    st.warning("No prices in the selected hour range for: " + ", ".join(tso_label(t) for t in missing))
+
+# =================================================================
+# DAY AT A GLANCE
+# =================================================================
+st.subheader("Day at a glance")
+rows = []
+for t in SELECTED:
+    v, c = VALUES[t][MASK], CATS[t][MASK]
+    ok = c > 0
+    tot = max(int(ok.sum()), 1)
+    up_v, dn_v = v[c == CAT_UP], v[c == CAT_DOWN]
+    rows.append({
+        "TSO": tso_label(t),
+        "Avg up price": np.nanmean(up_v) if up_v.size else np.nan,
+        "Avg down price": np.nanmean(dn_v) if dn_v.size else np.nan,
+        "Min": np.nanmin(v) if ok.any() else np.nan,
+        "Max": np.nanmax(v) if ok.any() else np.nan,
+        "% time Up": 100 * np.sum(c == CAT_UP) / tot,
+        "% time Down": 100 * np.sum(c == CAT_DOWN) / tot,
+        "% time Neutral": 100 * np.sum(c == CAT_NEUTRAL) / tot,
+    })
+glance = pd.DataFrame(rows).set_index("TSO")
+st.dataframe(
+    glance,
+    width="stretch",
+    column_config={
+        "Avg up price": st.column_config.NumberColumn(format="%.1f €/MWh"),
+        "Avg down price": st.column_config.NumberColumn(format="%.1f €/MWh"),
+        "Min": st.column_config.NumberColumn(format="%.1f"),
+        "Max": st.column_config.NumberColumn(format="%.1f"),
+        "% time Up": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+        "% time Down": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+        "% time Neutral": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+    },
+)
+st.caption("Averages are time-weighted over 4-second cycles, per direction. "
+           "% time is the share of cycles with an up-only, down-only or two-sided price.")
 
 
-if not tsos4:
-    st.warning("Please select at least one TSO to display the similarity matrix.")
-else:
-    vals4 = {tso: tso_values_all[tso][mask4].astype(float) for tso in tsos4}
-    has_any_data4 = any(np.any(~np.isnan(vals4[tso])) for tso in tsos4)
+# =================================================================
+# SECTION 1 — COMBINED CHART
+# =================================================================
+@st.fragment
+def section_combined():
+    st.header("All selected TSOs — combined")
+    with st.expander("⚙️ Chart controls", expanded=False):
+        yr = y_range_control("s1", [VALUES[t][MASK] for t in SELECTED])
+    fig = go.Figure()
+    for t in SELECTED:
+        y = VALUES[t][MASK]
+        idx = compress_steps(T, y)
+        fig.add_trace(go.Scattergl(
+            x=T[idx], y=y[idx], mode="lines", name=tso_label(t),
+            line=dict(color=color_of(t), width=1.6, shape="hv"),
+            hovertemplate="%{y:.2f} €/MWh",
+        ))
+    base_layout(fig, 520, f"CBMP {date_str} · {start_t:%H:%M}–{end_t:%H:%M} (Europe/Brussels)")
+    if yr:
+        fig.update_yaxes(range=yr)
+    fig.update_xaxes(rangeslider=dict(visible=True, thickness=0.06))
+    st.plotly_chart(fig, width="stretch", config=PLOT_CONFIG)
+    st.caption("Drag to zoom · double-click to reset · click a legend entry to hide a TSO, "
+               "double-click it to isolate. Use the slider below the chart to pan through the day.")
 
-    if not has_any_data4:
-        st.warning("No valid numerical data for the selected TSOs / time range.")
-    else:
-        labels4 = [TSO_DISPLAY_NAMES[t] for t in tsos4]
-        m4 = len(tsos4)
-        sim_matrix = np.full((m4, m4), np.nan, dtype=float)
 
-        for i in range(m4):
-            for j in range(m4):
-                if i == j:
-                    sim_matrix[i, j] = 100.0
-                else:
-                    sim_matrix[i, j] = percentage_equal(vals4[tsos4[i]], vals4[tsos4[j]])
+section_combined()
 
-        sim_df = pd.DataFrame(sim_matrix, index=labels4, columns=labels4)
 
-        styled = (
-            sim_df.style
-            .background_gradient(cmap="RdYlGn", vmin=0, vmax=100, axis=None)
-            .format(lambda v: f"{v:.2f}%" if not pd.isna(v) else "")
-            .set_properties(**{"text-align": "center"})
-            .set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
-        )
+# =================================================================
+# SECTION 2 — INDIVIDUAL TSO CHARTS COLOURED BY DIRECTION
+# =================================================================
+@st.fragment
+def section_individual():
+    st.header("Individual TSOs — coloured by aFRR direction")
+    with st.expander("⚙️ Chart controls", expanded=False):
+        shared_y = st.checkbox("Same Y-scale for all TSOs", value=True, key="s2_shared")
+        yr = y_range_control("s2", [VALUES[t][MASK] for t in SELECTED]) if shared_y else None
+    n = len(SELECTED)
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True,
+                        subplot_titles=[tso_label(t) for t in SELECTED],
+                        vertical_spacing=min(0.06, 0.25 / max(n, 1)))
+    for i, t in enumerate(SELECTED, start=1):
+        segs = direction_segments(T, VALUES[t][MASK], CATS[t][MASK])
+        for d, (sx, sy) in segs.items():
+            fig.add_trace(go.Scattergl(
+                x=sx, y=sy, mode="lines", name=DIR[d]["desc"], legendgroup=DIR[d]["key"],
+                showlegend=(i == 1), line=dict(color=DIR[d]["color"], width=1.4),
+                connectgaps=False, hovertemplate="%{y:.2f} €/MWh",
+            ), row=i, col=1)
+    base_layout(fig, 90 + 240 * n)
+    fig.update_layout(hovermode="closest")
+    fig.update_yaxes(title_text=None)
+    if yr:
+        fig.update_yaxes(range=yr)
+    st.plotly_chart(fig, width="stretch", config=PLOT_CONFIG)
+    st.caption("X-axes are linked: zooming in one chart zooms all of them.")
 
-        st.dataframe(styled, width="stretch")
+
+section_individual()
+
+
+# =================================================================
+# SECTION 3 — QUARTER-HOUR AVERAGES BY DIRECTION
+# =================================================================
+@st.fragment
+def section_qh():
+    st.header("Quarter-hour average prices by direction")
+    st.markdown(
+        f"Within one quarter-hour, PICASSO can clear 225 times, in both directions. When the "
+        f"common up and down merit orders **overlap**, the average *down* price can end up "
+        f"**above** the average *up* price in the same quarter-hour, as if a surplus looked like "
+        f"a shortage. Explained in {post_link('overlap')} and {post_link('overlap2')}."
+    )
+    labels = {"up": "Up", "down": "Down", "neutral": "Neutral", "overall": "All cycles (overall avg)"}
+    colors = {"up": DIR[CAT_UP]["color"], "down": DIR[CAT_DOWN]["color"],
+              "neutral": DIR[CAT_NEUTRAL]["color"], "overall": "#7f8c8d"}
+
+    qh = {t: qh_averages(T, VALUES[t][MASK], CATS[t][MASK]) for t in SELECTED}
+
+    with st.expander("⚙️ Chart controls", expanded=True):
+        dirs = st.multiselect("Series", options=list(labels), default=["up", "down"],
+                              format_func=labels.get, key="s3_dirs")
+        yr = y_range_control("s3", [qh[t][d].to_numpy() for t in SELECTED for d in dirs])
+
+    if not dirs:
+        st.info("Select at least one series.")
+        return
+
+    n = len(SELECTED)
+    ncols = 1 if n == 1 else 2
+    nrows = int(np.ceil(n / ncols))
+    fig = make_subplots(rows=nrows, cols=ncols, shared_xaxes=True, shared_yaxes=True,
+                        subplot_titles=[tso_label(t) for t in SELECTED],
+                        vertical_spacing=min(0.12, 0.3 / max(nrows, 1)), horizontal_spacing=0.04)
+    for i, t in enumerate(SELECTED):
+        r, c = i // ncols + 1, i % ncols + 1
+        for d in dirs:
+            s = qh[t][d]
+            fig.add_trace(go.Scatter(
+                x=s.index, y=s.values, mode="lines+markers", name=labels[d], legendgroup=d,
+                showlegend=(i == 0),
+                line=dict(color=colors[d], width=1.6, shape="hv",
+                          dash="dot" if d == "overall" else "solid"),
+                marker=dict(size=4), connectgaps=False,
+                hovertemplate=labels[d] + ": %{y:.2f} €/MWh<extra></extra>",
+            ), row=r, col=c)
+    base_layout(fig, 70 + 320 * nrows)
+    fig.update_yaxes(title_text=None)
+    if yr:
+        fig.update_yaxes(range=yr)
+    st.plotly_chart(fig, width="stretch", config=PLOT_CONFIG)
+
+    # ---- statistics --------------------------------------------------
+    st.subheader("Quarter-hour direction statistics")
+    diff_rows, count_rows = [], []
+    for t in SELECTED:
+        a = qh[t]
+        has_up, has_dn, has_nt = a["up"].notna(), a["down"].notna(), a["neutral"].notna()
+        diff = (a["up"] - a["down"]).dropna()
+        diff_rows.append({
+            "TSO": tso_label(t),
+            "QH with Up & Down": int(len(diff)),
+            "Down > Up (overlap)": int((diff < 0).sum()),
+            "% overlap": 100 * (diff < 0).mean() if len(diff) else np.nan,
+            "Mean": diff.mean() if len(diff) else np.nan,
+            "Median": diff.median() if len(diff) else np.nan,
+            "P10": diff.quantile(.10) if len(diff) else np.nan,
+            "P90": diff.quantile(.90) if len(diff) else np.nan,
+        })
+        count_rows.append({
+            "TSO": tso_label(t),
+            "Both Up & Down": int((has_up & has_dn).sum()),
+            "Only Up (± Neutral)": int((has_up & ~has_dn).sum()),
+            "Only Down (± Neutral)": int((has_dn & ~has_up).sum()),
+            "Only Neutral": int((has_nt & ~has_up & ~has_dn).sum()),
+            "Total QH": int(len(a)),
+        })
+
+    st.markdown("**Up − Down spread of quarter-hour averages** (€/MWh, only quarter-hours where both "
+                "directions occurred). A negative spread means the average down price was higher "
+                "than the average up price: the signature of overlapping merit orders.")
+    st.dataframe(
+        pd.DataFrame(diff_rows).set_index("TSO"), width="stretch",
+        column_config={
+            "% overlap": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+            **{k: st.column_config.NumberColumn(format="%.1f") for k in ["Mean", "Median", "P10", "P90"]},
+        },
+    )
+    st.markdown("**Number of quarter-hours by direction combination**")
+    st.dataframe(pd.DataFrame(count_rows).set_index("TSO"), width="stretch")
+
+    export = pd.concat({tso_label(t): qh[t] for t in SELECTED}, axis=1)
+    export.index.name = "QH start (Europe/Brussels)"
+    st.download_button(
+        "⬇️ Download quarter-hour averages (CSV)",
+        export.to_csv(sep=";", decimal=",").encode("utf-8-sig"),
+        file_name=f"picasso_qh_averages_{date_str}.csv", mime="text/csv",
+    )
+
+
+section_qh()
+
+
+# =================================================================
+# SECTION 4 — SIMILARITY MATRIX
+# =================================================================
+@st.fragment
+def section_similarity():
+    st.header("Price coupling between TSOs")
+    st.caption("Share (%) of 4-second cycles where two TSOs have exactly the same CBMP, among cycles "
+               "where both have a price. 100 % = always coupled (no congestion between them).")
+    with st.expander("⚙️ Chart controls", expanded=False):
+        use_all = st.checkbox("Use all TSOs (not only the selection)", value=False, key="s4_all")
+    tsos = available if use_all else SELECTED
+    if len(tsos) < 2:
+        st.info("Select at least two TSOs.")
+        return
+    M = np.vstack([VALUES[t][MASK] for t in tsos])
+    fin = np.isfinite(M)
+    m = len(tsos)
+    sim = np.full((m, m), np.nan)
+    for i in range(m):
+        both = fin[i] & fin
+        eq = (M[i] == M) & both
+        cnt = both.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sim[i] = np.where(cnt > 0, 100 * eq.sum(axis=1) / cnt, np.nan)
+    labels = [tso_label(t) for t in tsos]
+    fig = go.Figure(go.Heatmap(
+        z=sim, x=labels, y=labels, colorscale="RdYlGn", zmin=0, zmax=100,
+        text=np.where(np.isnan(sim), "", np.vectorize(lambda v: f"{v:.0f}")(np.nan_to_num(sim))),
+        texttemplate="%{text}", hovertemplate="%{y} ↔ %{x}: %{z:.1f}%<extra></extra>",
+        colorbar=dict(title="%", thickness=12),
+    ))
+    fig.update_layout(height=max(380, 34 * m + 160), margin=dict(l=10, r=10, t=20, b=10))
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig, width="stretch", config=PLOT_CONFIG)
+
+
+section_similarity()
+
+# =================================================================
+# FOOTER
+# =================================================================
+st.divider()
+st.markdown(
+    f"""
+<div style="text-align:center; opacity:.8; font-size:.9rem">
+Built by <b>Julien Jomaux</b> · <a href="https://gemenergyanalytics.substack.com/" target="_blank">Gem Energy Analytics</a>
+· Data: TransnetBW PICASSO CBMP API · Times in Europe/Brussels
+</div>
+""",
+    unsafe_allow_html=True,
+)
