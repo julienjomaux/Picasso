@@ -96,7 +96,7 @@ CAT_UP, CAT_DOWN, CAT_NEUTRAL = 1, 2, 3
 DIR = {
     CAT_UP:      dict(key="up", label="Up", color="#d6443a", desc="Up only (aFRR up)"),
     CAT_DOWN:    dict(key="down", label="Down", color="#2e9e5b", desc="Down only (aFRR down)"),
-    CAT_NEUTRAL: dict(key="neutral", label="Neutral", color="#3b6fd1", desc="Neutral (both prices)"),
+    CAT_NEUTRAL: dict(key="neutral", label="No activation", color="#3b6fd1", desc="No activation (up & down prices both published)"),
 }
 
 PLOT_CONFIG = {
@@ -346,11 +346,15 @@ VALUES, CATS = data["values"], data["cats"]
 SOD = seconds_of_day(TIMES)
 available = sorted(VALUES, key=tso_sort_key)
 
-# TSO selection (persisted across dates, sanitised to what exists that day)
+# TSO selection (persisted across dates, sanitised to what exists that day).
+# Only write to the widget's state when something actually has to change:
+# overwriting it on every run makes Streamlit drop the user's new selection.
 if "tsos" not in st.session_state:
     st.session_state["tsos"] = [t for t in DEFAULT_TSOS if t in available]
 else:
-    st.session_state["tsos"] = [t for t in st.session_state["tsos"] if t in available]
+    _clean = [t for t in st.session_state["tsos"] if t in available]
+    if _clean != list(st.session_state["tsos"]):
+        st.session_state["tsos"] = _clean
 
 
 def _set_tsos(lst):
@@ -432,7 +436,7 @@ TSOs share the same price; when capacity is saturated, prices split.
 The feed gives two prices per TSO:
 - **POS** (up): price of upward aFRR activation → shown as <span class="pill" style="background:{DIR[CAT_UP]['color']}">Up</span>
 - **NEG** (down): price of downward aFRR activation → shown as <span class="pill" style="background:{DIR[CAT_DOWN]['color']}">Down</span>
-- If both exist in the same cycle, the app shows their average as <span class="pill" style="background:{DIR[CAT_NEUTRAL]['color']}">Neutral</span>
+- If both prices are published in the same cycle, it means **no aFRR activation** took place in that cycle → shown as <span class="pill" style="background:{DIR[CAT_NEUTRAL]['color']}">No activation</span> (the line is drawn at the midpoint of the two prices)
 
 Prices are paid **pay-as-clear**: all activated bids receive the CBMP. These prices feed directly
 into imbalance prices in many countries (e.g. Belgium).
@@ -468,7 +472,7 @@ for t in SELECTED:
         "Max": np.nanmax(v) if ok.any() else np.nan,
         "% time Up": 100 * np.sum(c == CAT_UP) / tot,
         "% time Down": 100 * np.sum(c == CAT_DOWN) / tot,
-        "% time Neutral": 100 * np.sum(c == CAT_NEUTRAL) / tot,
+        "% time no activation": 100 * np.sum(c == CAT_NEUTRAL) / tot,
     })
 glance = pd.DataFrame(rows).set_index("TSO")
 st.dataframe(
@@ -481,11 +485,11 @@ st.dataframe(
         "Max": st.column_config.NumberColumn(format="%.1f"),
         "% time Up": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
         "% time Down": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
-        "% time Neutral": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+        "% time no activation": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
     },
 )
 st.caption("Averages are time-weighted over 4-second cycles, per direction. "
-           "% time is the share of cycles with an up-only, down-only or two-sided price.")
+           "% time is the share of 4-second cycles with an up activation, a down activation, or no activation (both prices published).")
 
 
 # =================================================================
@@ -562,7 +566,7 @@ def section_qh():
         f"**above** the average *up* price in the same quarter-hour, as if a surplus looked like "
         f"a shortage. Explained in {post_link('overlap')} and {post_link('overlap2')}."
     )
-    labels = {"up": "Up", "down": "Down", "neutral": "Neutral", "overall": "All cycles (overall avg)"}
+    labels = {"up": "Up", "down": "Down", "neutral": "No activation (midpoint)", "overall": "All cycles (overall avg)"}
     colors = {"up": DIR[CAT_UP]["color"], "down": DIR[CAT_DOWN]["color"],
               "neutral": DIR[CAT_NEUTRAL]["color"], "overall": "#7f8c8d"}
 
@@ -621,9 +625,9 @@ def section_qh():
         count_rows.append({
             "TSO": tso_label(t),
             "Both Up & Down": int((has_up & has_dn).sum()),
-            "Only Up (± Neutral)": int((has_up & ~has_dn).sum()),
-            "Only Down (± Neutral)": int((has_dn & ~has_up).sum()),
-            "Only Neutral": int((has_nt & ~has_up & ~has_dn).sum()),
+            "Only Up (± no activation)": int((has_up & ~has_dn).sum()),
+            "Only Down (± no activation)": int((has_dn & ~has_up).sum()),
+            "No activation at all": int((has_nt & ~has_up & ~has_dn).sum()),
             "Total QH": int(len(a)),
         })
 
