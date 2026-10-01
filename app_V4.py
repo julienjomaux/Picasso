@@ -288,9 +288,10 @@ def y_range_control(key, arrays, default="Fit to data"):
 
 
 def base_layout(fig, height, title=None):
+    if title:
+        fig.update_layout(title=dict(text=title, x=0, xanchor="left", font=dict(size=15)))
     fig.update_layout(
         height=height,
-        title=dict(text=title, x=0, xanchor="left", font=dict(size=15)) if title else None,
         margin=dict(l=10, r=10, t=60 if title else 40, b=10),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -495,7 +496,6 @@ st.caption("Averages are time-weighted over 4-second cycles, per direction. "
 # =================================================================
 # SECTION 1 — COMBINED CHART
 # =================================================================
-@st.fragment
 def section_combined():
     st.header("All selected TSOs — combined")
     with st.expander("⚙️ Chart controls", expanded=False):
@@ -524,7 +524,6 @@ section_combined()
 # =================================================================
 # SECTION 2 — INDIVIDUAL TSO CHARTS COLOURED BY DIRECTION
 # =================================================================
-@st.fragment
 def section_individual():
     st.header("Individual TSOs — coloured by aFRR direction")
     with st.expander("⚙️ Chart controls", expanded=False):
@@ -557,7 +556,6 @@ section_individual()
 # =================================================================
 # SECTION 3 — QUARTER-HOUR AVERAGES BY DIRECTION
 # =================================================================
-@st.fragment
 def section_qh():
     st.header("Quarter-hour average prices by direction")
     st.markdown(
@@ -659,7 +657,6 @@ section_qh()
 # =================================================================
 # SECTION 4 — SIMILARITY MATRIX
 # =================================================================
-@st.fragment
 def section_similarity():
     st.header("Price coupling between TSOs")
     st.caption("Share (%) of 4-second cycles where two TSOs have exactly the same CBMP, among cycles "
